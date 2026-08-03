@@ -271,15 +271,16 @@ answers differ per unit, and two of them vindicate the question.
 - **The CPU crypto extensions are the primary win, and are in use:** `AESE`/
   `AESMC` + `PMULL` for AES-GCM, the ARMv8 `SHA256`/`SHA512` instructions, all
   selected once per process by runtime detection.
-- **The SME streaming vector unit is a real, unused win.** The M4's Scalable
-  Matrix Extension brings a 512-bit streaming vector unit (plus a fused
-  XOR-rotate, `XAR`). Measured: ChaCha20 on it reaches **~11.5 GB/s on a single
-  core — about 4x hand-written NEON** and well past `ring`. Better still,
-  because streaming-SVE and NEON are different execution resources, running two
-  SME threads alongside NEON threads measured **+57% over the best NEON-only
-  configuration** — this is exactly the "use every unit at once" idea, and it
-  works. It is reachable from Rust today with no third-party dependency, via a
-  single `core::arch::asm!` block, and is the headline roadmap item.
+- **The SME streaming vector unit wins per core and loses per chip.** The M4's
+  Scalable Matrix Extension brings a 512-bit streaming vector unit and a fused
+  XOR-rotate (`XAR`), and ChaCha20 on it does reach **~11.5 GB/s on one core,
+  about 4x hand-written NEON**. That number is real and it is also a trap: SME
+  is **one shared unit per cluster, not one per core**. Measured chip-wide,
+  streaming-SVE ChaCha saturates near 7.4 GB/s while NEON across ten threads
+  reaches 7.81, and SMOPA throughput scales only 1.35x from one thread to ten
+  against NEON's 8.7x. On the metric that matters — the whole machine —
+  adopting it would be a **regression**. An earlier revision of this document
+  claimed the opposite and named it the top roadmap item; that was wrong.
 - **The GPU wins only for bulk, and loses for records.** A constant-time
   ChaCha20-Poly1305 Metal kernel measured **39.8 GB/s at 4 MiB** — genuinely
   fast. But an empty kernel's launch-to-completion latency floor is **~150 µs**,
@@ -299,28 +300,53 @@ answers differ per unit, and two of them vindicate the question.
   Curve25519 or Poly1305 — measured a net loss. The published win for matrix
   units is lattice post-quantum (NTT), which this crate does not yet do.
 
-The full research, with the measured numbers behind each verdict, is the basis
-for the [roadmap](#roadmap).
+The conclusion is duller than the question deserves: **"use every compute unit"
+reduces, on this hardware, to "saturate the ten cores' private units and stop
+doing redundant work."** The largest single win of the whole optimisation pass
+was not an instruction at all — it was deleting a signature verification of our
+own freshly made signature, worth 1.51x on sealing.
+
+Full measurements: [`docs/research/`](docs/research/). How we compare to the
+published state of the art, and which techniques close the remaining gaps:
+[`docs/research/literature-review.md`](docs/research/literature-review.md).
 
 ## Roadmap
 
-Ordered by measured value:
+Ordered by measured value. The first three come straight from the literature
+review and are the path from "behind `ring`" to "ahead of it".
 
-1. **SME streaming-SVE ChaCha20**, with a NEON+SME heterogeneous work queue —
-   the measured path to *first* on ChaCha (~4x) and the realization of "use
-   every Apple unit at once" (+57% heterogeneous).
-2. **A PAKE (OPAQUE)** so a stolen vault blob is not offline-attackable.
-3. **Ed25519 verify**: T-free doublings and a width-8 NAF affine basepoint
-   table, to close the one public-key line still behind.
-4. **Record-path throughput**: a batch API using Montgomery's inversion trick
-   (measured 3.7–61x on the inversions), batch signature verification, and a
-   dynamic P/E-aware work queue (measured +17.6% over static chunking).
-5. **x86-64 AES-NI and PCLMULQDQ**, for parity with the AArch64 path.
-6. **A bulk-stream API** that can offload multi-megabyte payloads to Metal,
-   where the GPU's 39.8 GB/s actually pays off.
-7. **A persistent relay adapter** with the same monotonic and atomic-index
-   guarantees as the in-memory one.
-8. **Independent review**, before anyone should consider this production ready.
+1. **Fuse ChaCha20 and Poly1305 into one pass.** ChaCha in NEON, Poly1305 in
+   scalar registers on the previous block group — two different execution
+   resources, software-pipelined. This is precisely what `ring` beats us with;
+   we run two full passes over the buffer where it runs one.
+2. **Poly1305 in base 2^64**: nine multiply instructions per block instead of
+   eighteen. Self-contained, low effort, exactly quantified.
+3. **GHASH down to 26 carry-less multiplies per 128 bytes** (we are at 48):
+   precomputed folded Karatsuba keys, pre-twisted H powers to delete the
+   per-block `RBIT`, and software-pipelining GHASH against the previous group.
+   Also worth testing whether schoolbook beats Karatsuba on Apple cores, as the
+   canonical ARMv8 GCM paper found.
+4. **`PSTATE.DIT`** around every secret-handling path. Near-zero cost, and it
+   turns "constant time" from an assumption about undocumented microarchitecture
+   into an architectural guarantee.
+5. **A PAKE (OPAQUE)** so a stolen vault blob is not offline-attackable.
+6. **Ed25519 verify**: width-8 NAF, T-free projective doubling, affine-Niels
+   basepoint table.
+7. **Curve25519 scheduling** before any representation change — we are roughly
+   2.2x above our own theoretical floor, and published work reports 1.9x from
+   scheduling alone.
+8. **Record-path throughput**: a batch API using Montgomery's inversion trick,
+   batch signature verification (cofactored — *not* interchangeable with our
+   strict verify), and a dynamic P/E-aware work queue.
+9. **x86-64 AES-NI and PCLMULQDQ**, for parity with the AArch64 path.
+10. **A bulk-stream API** that can offload multi-megabyte payloads to Metal,
+    where the GPU's 39.8 GB/s actually pays off.
+11. **A persistent relay adapter** with the same monotonic and atomic-index
+    guarantees as the in-memory one.
+12. **Cross-client fork detection.** Our rollback check is a per-client
+    persisted head, which is weaker than SUNDR's fork consistency: a malicious
+    server can still show two devices divergent histories indefinitely.
+13. **Independent review**, before anyone should consider this production ready.
 
 ## License
 
