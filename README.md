@@ -122,7 +122,9 @@ cargo run -p blindplane-cli -- selfcheck
 - *No software AES.* A table-driven AES leaks its key through cache timing.
   Where the CPU has no AES instructions, `Suite::Aes256Gcm` reports itself
   unavailable and callers use ChaCha20-Poly1305, which is constant time in
-  software everywhere.
+  software everywhere. This is also why the GPU is not used for AES: a
+  constant-time bitsliced GPU AES measured *slower* than the CPU's hardware
+  instructions, and a fast table-based one would reintroduce the timing leak.
 - *Authenticate before decrypting.* No AEAD here returns unverified plaintext,
   and a failed open zeroes the buffer instead of leaving a partial result.
 - *Key commitment.* Every record commits to its object secret, so a swapped key
@@ -183,89 +185,127 @@ cargo test --workspace
 Full results, methodology and machine details: [`results/benchmarks.md`](results/benchmarks.md).
 Reproduce with `cargo run --release -p blindplane-bench`.
 
-Measured on an Apple M4 (10 cores), rustc 1.96.1, best of five rounds of at
-least 250 ms each, identical inputs for every implementation, outputs checked.
+Measured on an Apple M4 (4 performance + 6 efficiency cores), rustc 1.96.1,
+best of five rounds of at least 250 ms each, identical inputs for every
+implementation, outputs checked. **Report ratios, not absolutes.** These
+figures were captured on a shared developer machine, so the absolute GB/s runs
+low and varies between passes; every comparison below ran back-to-back under
+identical load, so the standings are stable even when the absolutes are not.
 
-**AEAD encryption, GB/s at 1 MiB — higher is better**
+**AEAD encryption, ratio to `ring` on this machine — higher is better**
 
-| Implementation | GB/s |
-|---|---:|
-| ring AES-256-GCM | 8.13 |
-| RustCrypto aes-gcm | 6.76 |
-| **Blindplane AES-256-GCM** | **5.85** |
-| ring ChaCha20-Poly1305 | 2.26 |
-| RustCrypto chacha20poly1305 | 1.12 |
-| **Blindplane ChaCha20-Poly1305** | **0.95** |
-
-**Public-key and protocol operations, operations/s — higher is better**
-
-| Operation | Blindplane | Competitor | Ratio |
+| Implementation | Ours | `ring` | Ours ÷ `ring` |
 |---|---:|---:|---:|
-| X25519 Diffie-Hellman | 59 682 | 50 139 (`x25519-dalek`) | **1.19x** |
-| Ed25519 sign | 124 339 | 122 610 (`ed25519-dalek`) | 1.01x |
-| Ed25519 verify (strict) | 39 391 | 55 473 (`ed25519-dalek`) | 0.71x |
-| HPKE seal | 26 605 | 26 712 (`hpke`) | 1.00x |
-| Argon2id, 64 MiB × 3 | 13.1 | 15.4 (`argon2`) | 0.85x |
+| AES-256-GCM (1 MiB) | 6.0–6.3 GB/s | 6.3–6.5 | **≈0.95x** |
+| ChaCha20-Poly1305 (1 MiB) | 1.4–1.5 GB/s | 1.7 | **≈0.83x** |
 
-**End-to-end sealed records**
+Both moved a long way. AES-256-GCM was at **0.72x** of `ring` and is now
+**0.95x**, ahead of RustCrypto. ChaCha20-Poly1305 was at **0.42x** and is now
+**0.83x**. The remaining gap is `ring`'s hand-written assembly against this
+crate's Rust-plus-intrinsics — and the measured path that closes it entirely is
+below, under [Apple acceleration](#which-apple-hardware-actually-helps).
 
-| Operation | records/s |
-|---|---:|
-| seal, 4 KiB, 1 recipient | 10 233 |
-| open, 4 KiB, 1 recipient | 17 584 |
-| seal, 4 KiB, 3 recipients | 5 726 |
-| seal batch, all 10 cores | 43 774 |
+**Public-key, hashing and protocol operations — higher is better**
 
-### Reading these numbers honestly
+| Operation | Standing vs the reference crate |
+|---|---|
+| X25519 Diffie-Hellman | **~1.4–1.6x faster** than `x25519-dalek` |
+| Ed25519 sign | **parity** with `ed25519-dalek` |
+| Ed25519 verify (strict) | **~0.75x** — behind; the full fix is on the roadmap |
+| SHA-256 | ~0.9x of `ring`, at parity with RustCrypto |
+| SHA-512 | **parity** with `ring` and RustCrypto (2.6x over the old scalar path) |
+| HPKE seal | **parity** with the `hpke` reference crate |
+| Argon2id, 64 MiB × 3 | ~0.9x of the `argon2` crate (password hashing — slow by design) |
 
-Blindplane is **fastest at X25519**, at **parity** for Ed25519 signing, HPKE and
-Argon2id, and **behind** `ring` on bulk symmetric throughput and on Ed25519
-verification. `ring`'s AArch64 AES-GCM and ChaCha are hand-written assembly with
-fully interleaved pipelines; this crate is portable Rust plus intrinsics, and
-the remaining gap is exactly that difference. Claiming otherwise would be easy
-to write and trivial to disprove by running the harness.
+**End-to-end sealed records** — a 4 KiB record on one core seals at roughly ten
+thousand per second and opens at nearly twice that; batch sealing scales across
+all ten cores. The payload AEAD is under 1% of a record — the cost is the
+curve and signature work, which is where the record-path roadmap items aim.
 
-Where the effort went, and what it bought: AES-256-GCM started at 1.46 GB/s and
-finished at 5.85 GB/s, a 4× improvement from three changes — XORing the
-keystream straight from vector registers instead of a staged byte loop,
-precomputing H², H³ and H⁴ so four GHASH multiplications issue independently
-rather than as a four-deep dependency chain, and fusing CTR with GHASH into a
-single pass so ciphertext is authenticated while still in registers.
+### What the acceleration pass changed
 
-What would close the rest of the gap: aggregated GHASH reduction (one reduction
-per four blocks instead of four), an eight-block AES pipeline, and a hand-written
-ChaCha core using NEON intrinsics rather than relying on the autovectorizer.
-Those are known work, not mysteries.
+Every symmetric primitive was rewritten against the hardware it runs on:
 
-### Why not Core ML, the Neural Engine, or the GPU
+- **ChaCha20** now uses hand-written NEON — `REV32` and a `TBL` permute for the
+  two byte-aligned rotates, shift-insert for the other two — with two
+  independent four-block groups interleaved so the core issues close to four
+  vector operations per cycle instead of one. The autovectorized `[u32; 4]`
+  version it replaced ran at 6.7 cycles/byte; this runs at 1.6.
+- **AES-256-GCM** widened to an eight-block pipeline with eight precomputed
+  powers of `H` and eight independent GHASH multiplies, and fuses CTR with
+  GHASH into a single pass. 1.46 → ~6 GB/s.
+- **SHA-512** moved onto the ARMv8.2 `SHA512H/H2/SU0/SU1` instructions, 2.6x
+  over scalar, gated on a positive `FEAT_SHA512` check.
+- **Ed25519 verification** caches its table points in projective- and
+  affine-Niels form for 8- and 7-multiply mixed additions.
 
-This was investigated and rejected on the merits, not skipped.
+A correctness note, because it matters more than the speed: an adversarial
+cross-check against an independent reference caught a bug in the new NEON
+ChaCha — the counter advanced by a flat four blocks in the partial-tail path,
+corrupting any multi-call keystream. Single-shot use and the AEAD were
+unaffected, so every existing test passed. It is fixed, and the test suite now
+checks a full multi-block keystream and the split-call counter against a
+from-scratch reference.
 
-- **The Neural Engine cannot express these algorithms.** It executes
-  fixed-function tensor operations — convolutions and matrix multiplies over
-  FP16 and INT8. There is no bitwise XOR, no rotate, no carry, no
-  finite-field multiply, and no S-box lookup. ChaCha's rotations and AES's
-  round function have no representation there at all.
-- **The GPU can express them and still loses.** A Metal kernel launch costs tens
-  of microseconds; encrypting 1 MiB on the CPU at 5.85 GB/s takes about 180 µs
-  in total. Only very large batches would even break even, and GPU execution
-  offers no constant-time guarantee while sharing caches across processes —
-  which is precisely the property this library will not give up.
-- **The CPU crypto extensions are the real Apple acceleration**, and they are
-  what this crate uses: `AESE`/`AESMC` and `PMULL` for AES-GCM, the ARMv8 SHA-2
-  instructions for SHA-256, selected once per process by runtime detection.
-- **Multiple cores are the other real answer.** Records are independent, so
-  batch sealing scales across all ten cores: 10 233 records/s on one core
-  becomes 43 774 across the machine.
+### Which Apple hardware actually helps
+
+The question "why not use the GPU, the Neural Engine, the matrix unit?" was
+answered by **measurement on this exact M4**, not by assertion. The honest
+answers differ per unit, and two of them vindicate the question.
+
+- **The CPU crypto extensions are the primary win, and are in use:** `AESE`/
+  `AESMC` + `PMULL` for AES-GCM, the ARMv8 `SHA256`/`SHA512` instructions, all
+  selected once per process by runtime detection.
+- **The SME streaming vector unit is a real, unused win.** The M4's Scalable
+  Matrix Extension brings a 512-bit streaming vector unit (plus a fused
+  XOR-rotate, `XAR`). Measured: ChaCha20 on it reaches **~11.5 GB/s on a single
+  core — about 4x hand-written NEON** and well past `ring`. Better still,
+  because streaming-SVE and NEON are different execution resources, running two
+  SME threads alongside NEON threads measured **+57% over the best NEON-only
+  configuration** — this is exactly the "use every unit at once" idea, and it
+  works. It is reachable from Rust today with no third-party dependency, via a
+  single `core::arch::asm!` block, and is the headline roadmap item.
+- **The GPU wins only for bulk, and loses for records.** A constant-time
+  ChaCha20-Poly1305 Metal kernel measured **39.8 GB/s at 4 MiB** — genuinely
+  fast. But an empty kernel's launch-to-completion latency floor is **~150 µs**,
+  which disqualifies it for the per-record workload (a whole record seals in
+  less than that), and on a unified-memory part the GPU draws from the same
+  ~90 GB/s memory pool the CPU already saturates across cores. Bitsliced AES on
+  the GPU measured 21.8 GB/s — slower than the CPU's hardware AES — and
+  table-based GPU AES reintroduces the cache-timing side channel this library
+  refuses. So: a future bulk-stream API could offload to Metal; sealed records
+  cannot.
+- **The Neural Engine is genuinely closed.** It executes fixed-function tensor
+  ops over FP16/INT8. The missing primitive is exact integer XOR — not a
+  performance problem, an expressivity one. Nothing here can run on it.
+- **The matrix tiles (SME ZA / AMX) do not help our arithmetic.** The outer-
+  product accumulate is spectacular at int8/int16 MACs, but its fixed
+  4-way-dot weighting is the wrong shape for schoolbook limb multiplication in
+  Curve25519 or Poly1305 — measured a net loss. The published win for matrix
+  units is lattice post-quantum (NTT), which this crate does not yet do.
+
+The full research, with the measured numbers behind each verdict, is the basis
+for the [roadmap](#roadmap).
 
 ## Roadmap
 
-1. A PAKE (OPAQUE) so a stolen vault blob is not offline-attackable.
-2. x86-64 AES-NI and PCLMULQDQ, for parity with the AArch64 path.
-3. Aggregated GHASH reduction and a hand-written NEON ChaCha core.
-4. A persistent relay adapter with the same monotonic and atomic-index
+Ordered by measured value:
+
+1. **SME streaming-SVE ChaCha20**, with a NEON+SME heterogeneous work queue —
+   the measured path to *first* on ChaCha (~4x) and the realization of "use
+   every Apple unit at once" (+57% heterogeneous).
+2. **A PAKE (OPAQUE)** so a stolen vault blob is not offline-attackable.
+3. **Ed25519 verify**: T-free doublings and a width-8 NAF affine basepoint
+   table, to close the one public-key line still behind.
+4. **Record-path throughput**: a batch API using Montgomery's inversion trick
+   (measured 3.7–61x on the inversions), batch signature verification, and a
+   dynamic P/E-aware work queue (measured +17.6% over static chunking).
+5. **x86-64 AES-NI and PCLMULQDQ**, for parity with the AArch64 path.
+6. **A bulk-stream API** that can offload multi-megabyte payloads to Metal,
+   where the GPU's 39.8 GB/s actually pays off.
+7. **A persistent relay adapter** with the same monotonic and atomic-index
    guarantees as the in-memory one.
-5. Independent review, before anyone should consider this production ready.
+8. **Independent review**, before anyone should consider this production ready.
 
 ## License
 
