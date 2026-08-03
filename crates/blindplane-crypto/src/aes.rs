@@ -157,10 +157,44 @@ mod arm {
         }
     }
 
-    /// Carry-less multiplication in GF(2^128) modulo `x^128 + x^7 + x^2 + x + 1`.
+    /// The unreduced 256-bit carry-less product of two field elements.
+    ///
+    /// Addition in GF(2^128) is XOR, and XOR is linear, so a sum of products
+    /// can be accumulated in this unreduced form and reduced once at the end
+    /// instead of once per product. Reduction is the expensive half — three of
+    /// the six PMULLs per multiply — so hoisting it out of a group of eight is
+    /// most of the cost of GHASH.
+    #[derive(Clone, Copy)]
+    struct Unreduced {
+        low: uint8x16_t,
+        high: uint8x16_t,
+    }
+
+    impl Unreduced {
+        const fn zero(zero: uint8x16_t) -> Self {
+            Self {
+                low: zero,
+                high: zero,
+            }
+        }
+
+        #[target_feature(enable = "aes,neon")]
+        unsafe fn xor(self, other: Self) -> Self {
+            // SAFETY: the caller guarantees NEON.
+            unsafe {
+                Self {
+                    low: veorq_u8(self.low, other.low),
+                    high: veorq_u8(self.high, other.high),
+                }
+            }
+        }
+    }
+
+    /// Karatsuba product without reduction: three 64x64 multiplies.
     #[target_feature(enable = "aes,neon")]
-    unsafe fn gf_mul(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
-        {
+    unsafe fn gf_mul_wide(a: uint8x16_t, b: uint8x16_t) -> Unreduced {
+        // SAFETY: the caller guarantees the PMULL extension.
+        unsafe {
             let a_p: poly64x2_t = vreinterpretq_p64_u8(a);
             let b_p: poly64x2_t = vreinterpretq_p64_u8(b);
 
@@ -169,7 +203,6 @@ mod arm {
             let b_lo = vgetq_lane_u64(vreinterpretq_u64_u8(b), 0);
             let b_hi = vgetq_lane_u64(vreinterpretq_u64_u8(b), 1);
 
-            // Karatsuba: three 64x64 products instead of four.
             let low = vreinterpretq_u8_p128(vmull_p64(a_lo, b_lo));
             let high = vreinterpretq_u8_p128(vmull_high_p64(a_p, b_p));
             let middle = veorq_u8(
@@ -180,20 +213,28 @@ mod arm {
                 high,
             );
 
-            // Spread the middle term across the 256-bit product.
             let zero = vdupq_n_u8(0);
-            let middle_shifted_up = vextq_u8(zero, middle, 8);
-            let middle_shifted_down = vextq_u8(middle, zero, 8);
-            let product_low = veorq_u8(low, middle_shifted_up);
-            let product_high = veorq_u8(high, middle_shifted_down);
+            Unreduced {
+                low: veorq_u8(low, vextq_u8(zero, middle, 8)),
+                high: veorq_u8(high, vextq_u8(middle, zero, 8)),
+            }
+        }
+    }
+
+    /// Reduce a 256-bit product modulo `x^128 + x^7 + x^2 + x + 1`.
+    #[target_feature(enable = "aes,neon")]
+    unsafe fn gf_reduce(product: Unreduced) -> uint8x16_t {
+        // SAFETY: the caller guarantees the PMULL extension.
+        unsafe {
+            let zero = vdupq_n_u8(0);
 
             // Fold x^128 back in: x^128 = x^7 + x^2 + x + 1, i.e. 0x87.
-            let h_lo = vgetq_lane_u64(vreinterpretq_u64_u8(product_high), 0);
-            let h_hi = vgetq_lane_u64(vreinterpretq_u64_u8(product_high), 1);
+            let h_lo = vgetq_lane_u64(vreinterpretq_u64_u8(product.high), 0);
+            let h_hi = vgetq_lane_u64(vreinterpretq_u64_u8(product.high), 1);
             let fold_lo = vreinterpretq_u8_p128(vmull_p64(h_lo, 0x87));
             let fold_hi = vreinterpretq_u8_p128(vmull_p64(h_hi, 0x87));
 
-            let mut result = veorq_u8(product_low, fold_lo);
+            let mut result = veorq_u8(product.low, fold_lo);
             result = veorq_u8(result, vextq_u8(zero, fold_hi, 8));
 
             // The second fold handles the few bits that spilled past 128 again.
@@ -201,6 +242,13 @@ mod arm {
             let second = vreinterpretq_u8_p128(vmull_p64(spill, 0x87));
             veorq_u8(result, second)
         }
+    }
+
+    /// Carry-less multiplication in GF(2^128), reduced.
+    #[target_feature(enable = "aes,neon")]
+    unsafe fn gf_mul(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+        // SAFETY: the caller guarantees the PMULL extension.
+        unsafe { gf_reduce(gf_mul_wide(a, b)) }
     }
 
     /// Convert to and from the bit-reversed polynomial representation.
@@ -271,19 +319,19 @@ mod arm {
         ) {
             // SAFETY: the caller guarantees AES and PMULL.
             unsafe {
+                // Eight unreduced products summed, then one reduction, rather
+                // than eight reductions.
                 let b0 = veorq_u8(self.acc, reflect(c0));
-                let p0 = gf_mul(b0, self.powers[0]);
-                let p1 = gf_mul(reflect(c1), self.powers[1]);
-                let p2 = gf_mul(reflect(c2), self.powers[2]);
-                let p3 = gf_mul(reflect(c3), self.powers[3]);
-                let p4 = gf_mul(reflect(c4), self.powers[4]);
-                let p5 = gf_mul(reflect(c5), self.powers[5]);
-                let p6 = gf_mul(reflect(c6), self.powers[6]);
-                let p7 = gf_mul(reflect(c7), self.powers[7]);
-                self.acc = veorq_u8(
-                    veorq_u8(veorq_u8(p0, p1), veorq_u8(p2, p3)),
-                    veorq_u8(veorq_u8(p4, p5), veorq_u8(p6, p7)),
-                );
+                let p0 = gf_mul_wide(b0, self.powers[0]);
+                let p1 = gf_mul_wide(reflect(c1), self.powers[1]);
+                let p2 = gf_mul_wide(reflect(c2), self.powers[2]);
+                let p3 = gf_mul_wide(reflect(c3), self.powers[3]);
+                let p4 = gf_mul_wide(reflect(c4), self.powers[4]);
+                let p5 = gf_mul_wide(reflect(c5), self.powers[5]);
+                let p6 = gf_mul_wide(reflect(c6), self.powers[6]);
+                let p7 = gf_mul_wide(reflect(c7), self.powers[7]);
+                let sum = p0.xor(p1).xor(p2).xor(p3).xor(p4).xor(p5).xor(p6).xor(p7);
+                self.acc = gf_reduce(sum);
             }
         }
 
@@ -299,11 +347,11 @@ mod arm {
             // SAFETY: the caller guarantees AES and PMULL.
             unsafe {
                 let b0 = veorq_u8(self.acc, reflect(c0));
-                let p0 = gf_mul(b0, self.powers[4]);
-                let p1 = gf_mul(reflect(c1), self.powers[5]);
-                let p2 = gf_mul(reflect(c2), self.powers[6]);
-                let p3 = gf_mul(reflect(c3), self.powers[7]);
-                self.acc = veorq_u8(veorq_u8(p0, p1), veorq_u8(p2, p3));
+                let p0 = gf_mul_wide(b0, self.powers[4]);
+                let p1 = gf_mul_wide(reflect(c1), self.powers[5]);
+                let p2 = gf_mul_wide(reflect(c2), self.powers[6]);
+                let p3 = gf_mul_wide(reflect(c3), self.powers[7]);
+                self.acc = gf_reduce(p0.xor(p1).xor(p2).xor(p3));
             }
         }
 
@@ -317,12 +365,12 @@ mod arm {
                 let b2 = reflect(vld1q_u8(data.add(32)));
                 let b3 = reflect(vld1q_u8(data.add(48)));
 
-                let p0 = gf_mul(b0, self.powers[4]);
-                let p1 = gf_mul(b1, self.powers[5]);
-                let p2 = gf_mul(b2, self.powers[6]);
-                let p3 = gf_mul(b3, self.powers[7]);
+                let p0 = gf_mul_wide(b0, self.powers[4]);
+                let p1 = gf_mul_wide(b1, self.powers[5]);
+                let p2 = gf_mul_wide(b2, self.powers[6]);
+                let p3 = gf_mul_wide(b3, self.powers[7]);
 
-                self.acc = veorq_u8(veorq_u8(p0, p1), veorq_u8(p2, p3));
+                self.acc = gf_reduce(p0.xor(p1).xor(p2).xor(p3));
             }
         }
 
