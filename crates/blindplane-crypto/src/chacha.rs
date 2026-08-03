@@ -217,13 +217,16 @@ pub fn hchacha20(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 32] {
 /// permute. The other two use shift-right-and-insert, which fuses the shift and
 /// the or.
 #[cfg(all(feature = "accel", target_arch = "aarch64"))]
-#[allow(clippy::cast_ptr_alignment, reason = "vld1q/vst1q perform unaligned NEON access by contract")]
+#[allow(
+    clippy::cast_ptr_alignment,
+    reason = "vld1q/vst1q perform unaligned NEON access by contract"
+)]
 mod neon {
     use core::arch::aarch64::{
-        uint32x4_t, uint8x16_t, vaddq_u32, veorq_u32, vld1q_u32, vld1q_u8, vqtbl1q_u8,
-        vreinterpretq_u16_u32, vreinterpretq_u32_u16, vreinterpretq_u32_u64, vreinterpretq_u32_u8,
-        vreinterpretq_u64_u32, vreinterpretq_u8_u32, vrev32q_u16, vdupq_n_u32, vshlq_n_u32,
-        vsriq_n_u32, vst1q_u32, vtrn1q_u32, vtrn1q_u64, vtrn2q_u32, vtrn2q_u64,
+        uint8x16_t, uint32x4_t, vaddq_u32, vdupq_n_u32, veorq_u32, vld1q_u8, vld1q_u32, vqtbl1q_u8,
+        vreinterpretq_u8_u32, vreinterpretq_u16_u32, vreinterpretq_u32_u8, vreinterpretq_u32_u16,
+        vreinterpretq_u32_u64, vreinterpretq_u64_u32, vrev32q_u16, vshlq_n_u32, vsriq_n_u32,
+        vst1q_u32, vtrn1q_u32, vtrn1q_u64, vtrn2q_u32, vtrn2q_u64,
     };
 
     /// Byte permutation implementing a left rotate by 8 within each 32-bit lane.

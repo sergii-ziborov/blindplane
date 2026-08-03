@@ -87,6 +87,7 @@ pub mod poly1305;
 pub mod rand;
 pub mod scalar;
 pub mod sha2;
+pub mod simple;
 pub mod util;
 
 pub use aead::{AeadError, Suite};
@@ -94,13 +95,17 @@ pub use edwards::{SignatureError, SigningKey, verify_strict};
 pub use kdf::{HmacSha256, HmacSha512, hkdf, hkdf_expand, hkdf_extract};
 pub use montgomery::StaticSecret;
 pub use sha2::{Sha256, Sha512};
+pub use simple::{Key, hash_password, verify_password};
 pub use util::{Choice, Secret, ct_eq_bytes, secure_erase};
 
 /// Which accelerated code paths this build will actually use on this CPU.
 ///
 /// Reported by the benchmark harness and by `blindplane-cli` so a performance
 /// number always says which implementation produced it.
-#[allow(clippy::struct_excessive_bools, reason = "a flat capability report, not state")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a flat capability report, not state"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Acceleration {
     /// SHA-256 runs on CPU cryptographic instructions.
