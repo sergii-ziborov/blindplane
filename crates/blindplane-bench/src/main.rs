@@ -29,7 +29,7 @@ use blindplane_crypto::aead::Suite;
 use blindplane_crypto::argon2::{Argon2Params, argon2id};
 use blindplane_crypto::hpke as bp_hpke;
 use blindplane_crypto::montgomery::StaticSecret;
-use blindplane_crypto::{Acceleration, Sha256, SigningKey, verify_strict};
+use blindplane_crypto::{Acceleration, Sha256, Sha512, SigningKey, verify_strict};
 use blindplane_wire::RecordContext;
 
 const MIN_ROUND: Duration = Duration::from_millis(250);
@@ -336,10 +336,33 @@ fn bench_hashing(report: &mut String) {
         }),
     );
 
+    let ours512 = throughput(
+        size,
+        measure(|| {
+            black_box(Sha512::digest(&data));
+        }),
+    );
+    let rc512 = throughput(
+        size,
+        measure(|| {
+            use sha2::Digest;
+            black_box(sha2::Sha512::digest(&data));
+        }),
+    );
+    let ring512 = throughput(
+        size,
+        measure(|| {
+            black_box(ring::digest::digest(&ring::digest::SHA512, &data));
+        }),
+    );
+
     for (name, value) in [
         ("**Blindplane SHA-256**", ours),
         ("RustCrypto sha2", rustcrypto),
         ("ring", ring_rate),
+        ("**Blindplane SHA-512**", ours512),
+        ("RustCrypto sha2 (512)", rc512),
+        ("ring (512)", ring512),
     ] {
         println!("  {name:34}{value:9.2}");
         let _ = writeln!(report, "| {name} | {value:.2} |");

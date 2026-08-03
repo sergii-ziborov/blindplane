@@ -109,7 +109,7 @@ impl EdwardsPoint {
     /// multiplication; precomputing `Y+X`, `Y-X` and `2d*T` once turns the
     /// 9-multiply generic addition into an 8-multiply mixed addition and stops
     /// the per-use recomputation entirely.
-    fn to_projective_niels(&self) -> ProjectiveNiels {
+    fn to_projective_niels(self) -> ProjectiveNiels {
         ProjectiveNiels {
             y_plus_x: self.y.add(&self.x),
             y_minus_x: self.y.sub(&self.x),

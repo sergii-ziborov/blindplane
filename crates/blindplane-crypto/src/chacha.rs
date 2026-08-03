@@ -7,10 +7,12 @@
 
 const SIGMA: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
 
-/// Four 32-bit lanes operated on together.
+/// Four 32-bit lanes operated on together (portable fallback only).
+#[cfg(not(all(feature = "accel", target_arch = "aarch64")))]
 #[derive(Clone, Copy)]
 struct Lane([u32; 4]);
 
+#[cfg(not(all(feature = "accel", target_arch = "aarch64")))]
 impl Lane {
     #[inline(always)]
     const fn splat(value: u32) -> Self {
@@ -86,11 +88,10 @@ impl ChaCha20 {
     /// XOR the keystream into `data` in place.
     pub fn apply_keystream(&mut self, data: &mut [u8]) {
         #[cfg(all(feature = "accel", target_arch = "aarch64"))]
-        {
-            // SAFETY: NEON is architecturally guaranteed on every AArch64 target
-            // that runs this code, so no runtime probe is needed.
-            unsafe { neon::apply_keystream(&mut self.state, data) };
-            return;
+        // SAFETY: NEON is architecturally guaranteed on every AArch64 target
+        // that runs this code, so no runtime probe is needed.
+        unsafe {
+            neon::apply_keystream(&mut self.state, data);
         }
 
         #[cfg(not(all(feature = "accel", target_arch = "aarch64")))]
@@ -111,6 +112,7 @@ impl ChaCha20 {
     }
 
     /// Write the next 256 bytes of keystream, advancing the counter by four.
+    #[cfg(not(all(feature = "accel", target_arch = "aarch64")))]
     fn four_blocks(&mut self, out: &mut [u8; 256]) {
         let counter = self.state[12];
         let mut v = [Lane::splat(0); 16];
@@ -151,6 +153,7 @@ impl ChaCha20 {
     }
 }
 
+#[cfg(not(all(feature = "accel", target_arch = "aarch64")))]
 #[inline(always)]
 fn quarter_round(v: &mut [Lane; 16], a: usize, b: usize, c: usize, d: usize) {
     v[a] = v[a].add(v[b]);
@@ -214,6 +217,7 @@ pub fn hchacha20(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 32] {
 /// permute. The other two use shift-right-and-insert, which fuses the shift and
 /// the or.
 #[cfg(all(feature = "accel", target_arch = "aarch64"))]
+#[allow(clippy::cast_ptr_alignment, reason = "vld1q/vst1q perform unaligned NEON access by contract")]
 mod neon {
     use core::arch::aarch64::{
         uint32x4_t, uint8x16_t, vaddq_u32, veorq_u32, vld1q_u32, vld1q_u8, vqtbl1q_u8,

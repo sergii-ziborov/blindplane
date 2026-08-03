@@ -100,10 +100,13 @@ pub use util::{Choice, Secret, ct_eq_bytes, secure_erase};
 ///
 /// Reported by the benchmark harness and by `blindplane-cli` so a performance
 /// number always says which implementation produced it.
+#[allow(clippy::struct_excessive_bools, reason = "a flat capability report, not state")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Acceleration {
     /// SHA-256 runs on CPU cryptographic instructions.
     pub sha256_hardware: bool,
+    /// SHA-512 runs on the FEAT_SHA512 instructions.
+    pub sha512_hardware: bool,
     /// AES-256-GCM is available at all, which requires those instructions.
     pub aes_hardware: bool,
     /// The build was compiled with the `accel` feature.
@@ -115,6 +118,7 @@ impl Acceleration {
     pub fn detect() -> Self {
         Self {
             sha256_hardware: sha256_hardware(),
+            sha512_hardware: sha2::sha512_is_hardware(),
             aes_hardware: aes::available(),
             accel_feature: cfg!(feature = "accel"),
         }
@@ -136,9 +140,14 @@ impl core::fmt::Display for Acceleration {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "accel={} sha256={} aes-gcm={}",
+            "accel={} sha256={} sha512={} aes-gcm={}",
             if self.accel_feature { "on" } else { "off" },
             if self.sha256_hardware {
+                "hardware"
+            } else {
+                "portable"
+            },
+            if self.sha512_hardware {
                 "hardware"
             } else {
                 "portable"
