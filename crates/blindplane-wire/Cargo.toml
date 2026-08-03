@@ -1,0 +1,14 @@
+[package]
+name = "blindplane-wire"
+description = "Keyless, server-safe wire types for Blindplane: canonical binary records, signature and rollback validation, and no decryption API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blindplane-crypto = { path = "../blindplane-crypto", version = "0.1.0" }
+
+[lints]
+workspace = true

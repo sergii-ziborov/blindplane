@@ -1,0 +1,72 @@
+[workspace]
+members = [
+    "crates/blindplane-crypto",
+    "crates/blindplane-wire",
+    "crates/blindplane-core",
+    "crates/blindplane-relay",
+    "crates/blindplane-blazingly",
+    "crates/blindplane-cli",
+    "crates/blindplane-bench",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sergii-ziborov/blindplane"
+homepage = "https://github.com/sergii-ziborov/blindplane"
+authors = ["Sergii Ziborov"]
+
+[workspace.dependencies]
+blindplane-crypto = { path = "crates/blindplane-crypto", version = "0.1.0" }
+blindplane-wire = { path = "crates/blindplane-wire", version = "0.1.0" }
+blindplane-core = { path = "crates/blindplane-core", version = "0.1.0" }
+
+# Adapter-only dependencies. Nothing here can reach `blindplane-crypto`,
+# `blindplane-wire` or `blindplane-core`, whose dependency graphs are empty.
+blazingly = "0.1.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# A lint group needs a lower priority than the individual lints that
+# override it, or the override order is unspecified.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Cryptographic and wire code is straight-line limb and byte arithmetic; these
+# pedantic lints fight that style without making anything safer or clearer.
+unreadable_literal = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+doc_markdown = "allow"
+format_collect = "allow"
+needless_pass_by_value = "allow"
+items_after_statements = "allow"
+struct_field_names = "allow"
+module_name_repetitions = "allow"
+return_self_not_must_use = "allow"
+too_many_lines = "allow"
+large_stack_arrays = "allow"
+cast_possible_wrap = "allow"
+verbose_bit_mask = "allow"
+decimal_literal_representation = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.bench]
+debug = true
+lto = "thin"
+codegen-units = 1

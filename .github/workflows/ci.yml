@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS covers the AArch64 accelerated paths; Linux covers the portable
+        # ones, which must produce identical output.
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --doc
+
+  portable:
+    name: portable build (no CPU extensions, no unsafe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Without `accel` the crate contains no `unsafe` at all and must still
+      # pass every published test vector.
+      - run: cargo test -p blindplane-crypto --no-default-features --features std
+
+  lint:
+    name: clippy and rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+
+  dependencies:
+    name: shipped crates have no third-party dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The security claim in the README is mechanical, so check it mechanically.
+      - name: assert empty dependency graphs
+        run: |
+          for crate in blindplane-crypto blindplane-wire blindplane-relay blindplane-core; do
+            echo "== $crate =="
+            tree=$(cargo tree -p "$crate" --edges normal --prefix none | sort -u)
+            echo "$tree"
+            if echo "$tree" | grep -v '^blindplane-' | grep -q '[^[:space:]]'; then
+              echo "::error::$crate has a third-party runtime dependency"
+              exit 1
+            fi
+          done

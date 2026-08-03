@@ -1,0 +1,21 @@
+[package]
+name = "blindplane-cli"
+description = "Command-line tool for Blindplane: key generation, sealing, opening and a self-check of the cryptographic core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "blindplane"
+path = "src/main.rs"
+
+[dependencies]
+blindplane-core = { path = "../blindplane-core", version = "0.1.0" }
+blindplane-crypto = { path = "../blindplane-crypto", version = "0.1.0" }
+blindplane-relay = { path = "../blindplane-relay", version = "0.1.0" }
+blindplane-wire = { path = "../blindplane-wire", version = "0.1.0" }
+
+[lints]
+workspace = true

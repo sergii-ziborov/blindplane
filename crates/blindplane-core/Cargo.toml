@@ -1,0 +1,15 @@
+[package]
+name = "blindplane-core"
+description = "Client-side sealing for Blindplane: multi-recipient HPKE envelopes, signed access manifests, blind indexes and parallel batch sealing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blindplane-crypto = { path = "../blindplane-crypto", version = "0.1.0" }
+blindplane-wire = { path = "../blindplane-wire", version = "0.1.0" }
+
+[lints]
+workspace = true

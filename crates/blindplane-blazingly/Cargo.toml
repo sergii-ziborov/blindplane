@@ -1,0 +1,20 @@
+[package]
+name = "blindplane-blazingly"
+description = "Blazingly adapter for the Blindplane keyless relay: typed operations over ciphertext, with no decryption API in the dependency graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blindplane-relay = { path = "../blindplane-relay", version = "0.1.0" }
+blindplane-wire = { path = "../blindplane-wire", version = "0.1.0" }
+blazingly.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+blindplane-core = { path = "../blindplane-core", version = "0.1.0" }
+futures-lite = "2.6.1"

@@ -1,0 +1,66 @@
+[package]
+name = "blindplane-crypto"
+description = "Dependency-free cryptographic core for Blindplane: ChaCha20-Poly1305, AES-256-GCM, SHA-2, HKDF, Argon2id, X25519, Ed25519 and HPKE, with Apple Silicon and x86-64 acceleration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["cryptography", "aead", "x25519", "ed25519", "hpke"]
+categories = ["cryptography", "no-std::no-alloc"]
+
+[dependencies]
+
+[features]
+default = ["std", "accel"]
+# Operating-system entropy and heap-backed helpers.
+std = []
+# CPU cryptographic extensions (ARMv8 AES/PMULL/SHA-2, x86-64 AES-NI/PCLMULQDQ).
+# Disabling this leaves the portable implementations, which produce identical
+# output, and removes every `unsafe` block from the compiled crate.
+accel = []
+
+[dev-dependencies]
+# Third-party implementations are used **only** to cross-check our own output in
+# tests and to provide competitor numbers in benchmarks. They are not part of
+# any shipped dependency graph.
+aes-gcm = "0.11.0"
+argon2 = "0.5.3"
+chacha20poly1305 = "0.11.0"
+ed25519-dalek = "3.0.0"
+hpke = { version = "0.14.0", default-features = false, features = ["alloc", "x25519", "chacha", "getrandom", "hkdfsha2"] }
+ring = "0.17.14"
+sha2 = "0.11.0"
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+# A lint group needs a lower priority than the individual lints that
+# override it, or the override order is unspecified.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Cryptographic code is written as straight-line limb arithmetic on purpose.
+many_single_char_names = "allow"
+similar_names = "allow"
+unreadable_literal = "allow"
+cast_possible_truncation = "allow"
+cast_lossless = "allow"
+must_use_candidate = "allow"
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+doc_markdown = "allow"
+missing_docs_in_private_items = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+needless_range_loop = "allow"
+inline_always = "allow"
+format_collect = "allow"
+items_after_statements = "allow"
+return_self_not_must_use = "allow"
+too_many_lines = "allow"
+large_stack_arrays = "allow"
+cast_possible_wrap = "allow"
+verbose_bit_mask = "allow"
+decimal_literal_representation = "allow"
