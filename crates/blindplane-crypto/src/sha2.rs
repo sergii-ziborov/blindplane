@@ -582,8 +582,8 @@ mod arm512 {
 mod arm {
     use super::K256;
     use core::arch::aarch64::{
-        uint32x4_t, vaddq_u32, vld1q_u8, vld1q_u32, vreinterpretq_u8_u32, vreinterpretq_u32_u8,
-        vrev32q_u8, vsha256h2q_u32, vsha256hq_u32, vsha256su0q_u32, vsha256su1q_u32, vst1q_u32,
+        uint32x4_t, vaddq_u32, vld1q_u8, vld1q_u32, vreinterpretq_u32_u8, vrev32q_u8,
+        vsha256h2q_u32, vsha256hq_u32, vsha256su0q_u32, vsha256su1q_u32, vst1q_u32,
     };
     use std::sync::OnceLock;
 
@@ -608,9 +608,34 @@ mod arm {
             let mut abcd = vld1q_u32(state.as_ptr());
             let mut efgh = vld1q_u32(state.as_ptr().add(4));
 
-            let mut round_keys = [vld1q_u32(K256.as_ptr()); 16];
-            for (i, key) in round_keys.iter_mut().enumerate() {
-                *key = vld1q_u32(K256.as_ptr().add(i * 4));
+            // A round with its schedule update woven through it.
+            //
+            // The digest update is one unbroken dependency chain — SHA256H2
+            // waits on SHA256H, and the next round waits on both — so nothing
+            // inside it can overlap. The message schedule is the only
+            // independent work available, and splitting it around the chain
+            // (su0 issued before the hash pair, su1 after) is what fills those
+            // stall slots. Doing both halves after the round, as the obvious
+            // version does, leaves the pipeline idle waiting on latency.
+            macro_rules! round {
+                ($w0:ident, $w1:ident, $w2:ident, $w3:ident, $k:literal) => {{
+                    let wk = vaddq_u32($w0, vld1q_u32(K256.as_ptr().add($k * 4)));
+                    let scheduled = vsha256su0q_u32($w0, $w1);
+                    let previous_abcd = abcd;
+                    abcd = vsha256hq_u32(abcd, efgh, wk);
+                    efgh = vsha256h2q_u32(efgh, previous_abcd, wk);
+                    $w0 = vsha256su1q_u32(scheduled, $w2, $w3);
+                }};
+            }
+
+            // The last four rounds consume the schedule without extending it.
+            macro_rules! final_round {
+                ($w:expr, $k:literal) => {{
+                    let wk = vaddq_u32($w, vld1q_u32(K256.as_ptr().add($k * 4)));
+                    let previous_abcd = abcd;
+                    abcd = vsha256hq_u32(abcd, efgh, wk);
+                    efgh = vsha256h2q_u32(efgh, previous_abcd, wk);
+                }};
             }
 
             for block in data.chunks_exact(64) {
@@ -618,29 +643,34 @@ mod arm {
                 let saved_efgh = efgh;
 
                 // The digest is big-endian; NEON loads are little-endian.
-                let mut msg: [uint32x4_t; 4] = [
-                    vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr()))),
-                    vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(16)))),
-                    vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(32)))),
-                    vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(48)))),
-                ];
+                // Four named registers, not an array: an array indexed by
+                // `round % 4` forces the schedule into memory, and the round
+                // keys likewise want constant offsets so they fold into the
+                // load rather than becoming a runtime table lookup.
+                let mut m0 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr())));
+                let mut m1 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(16))));
+                let mut m2 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(32))));
+                let mut m3 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(48))));
 
-                for round in 0..16 {
-                    let wk = vaddq_u32(msg[round % 4], round_keys[round]);
-                    let previous_abcd = abcd;
-                    abcd = vsha256hq_u32(abcd, efgh, wk);
-                    efgh = vsha256h2q_u32(efgh, previous_abcd, wk);
+                round!(m0, m1, m2, m3, 0);
+                round!(m1, m2, m3, m0, 1);
+                round!(m2, m3, m0, m1, 2);
+                round!(m3, m0, m1, m2, 3);
 
-                    if round < 12 {
-                        // Four schedule words at a time: su0 mixes w[i-15],
-                        // su1 folds in w[i-7] and w[i-2].
-                        msg[round % 4] = vsha256su1q_u32(
-                            vsha256su0q_u32(msg[round % 4], msg[(round + 1) % 4]),
-                            msg[(round + 2) % 4],
-                            msg[(round + 3) % 4],
-                        );
-                    }
-                }
+                round!(m0, m1, m2, m3, 4);
+                round!(m1, m2, m3, m0, 5);
+                round!(m2, m3, m0, m1, 6);
+                round!(m3, m0, m1, m2, 7);
+
+                round!(m0, m1, m2, m3, 8);
+                round!(m1, m2, m3, m0, 9);
+                round!(m2, m3, m0, m1, 10);
+                round!(m3, m0, m1, m2, 11);
+
+                final_round!(m0, 12);
+                final_round!(m1, 13);
+                final_round!(m2, 14);
+                final_round!(m3, 15);
 
                 abcd = vaddq_u32(abcd, saved_abcd);
                 efgh = vaddq_u32(efgh, saved_efgh);
@@ -648,7 +678,6 @@ mod arm {
 
             vst1q_u32(state.as_mut_ptr(), abcd);
             vst1q_u32(state.as_mut_ptr().add(4), efgh);
-            let _ = vreinterpretq_u8_u32(abcd);
         }
     }
 }
