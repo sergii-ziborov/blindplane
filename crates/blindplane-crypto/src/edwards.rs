@@ -102,6 +102,63 @@ impl EdwardsPoint {
         self.add(&rhs.negate())
     }
 
+    /// Cache the three subterms that an addition would otherwise recompute
+    /// every time this point is used as an addend.
+    ///
+    /// A table entry is added into the accumulator many times across a scalar
+    /// multiplication; precomputing `Y+X`, `Y-X` and `2d*T` once turns the
+    /// 9-multiply generic addition into an 8-multiply mixed addition and stops
+    /// the per-use recomputation entirely.
+    fn to_projective_niels(&self) -> ProjectiveNiels {
+        ProjectiveNiels {
+            y_plus_x: self.y.add(&self.x),
+            y_minus_x: self.y.sub(&self.x),
+            z: self.z,
+            t2d: self.t.mul(&D2),
+        }
+    }
+
+    /// Add a cached point in projective-Niels form. Eight multiplications.
+    fn add_projective_niels(&self, rhs: &ProjectiveNiels) -> Self {
+        let pp = self.y.add(&self.x).mul(&rhs.y_plus_x);
+        let mm = self.y.sub(&self.x).mul(&rhs.y_minus_x);
+        let tt2d = self.t.mul(&rhs.t2d);
+        let zz = self.z.mul(&rhs.z);
+        let zz2 = zz.add(&zz);
+
+        // Completed coordinates, then back to extended.
+        let cx = pp.sub(&mm);
+        let cy = pp.add(&mm);
+        let cz = zz2.add(&tt2d);
+        let ct = zz2.sub(&tt2d);
+        Self {
+            x: cx.mul(&ct),
+            y: cy.mul(&cz),
+            z: cz.mul(&ct),
+            t: cx.mul(&cy),
+        }
+    }
+
+    /// Add a cached point in affine-Niels form (its `Z` is one). Seven
+    /// multiplications, used for the constant basepoint table.
+    fn add_affine_niels(&self, rhs: &AffineNiels) -> Self {
+        let pp = self.y.add(&self.x).mul(&rhs.y_plus_x);
+        let mm = self.y.sub(&self.x).mul(&rhs.y_minus_x);
+        let txy2d = self.t.mul(&rhs.xy2d);
+        let z2 = self.z.add(&self.z);
+
+        let cx = pp.sub(&mm);
+        let cy = pp.add(&mm);
+        let cz = z2.add(&txy2d);
+        let ct = z2.sub(&txy2d);
+        Self {
+            x: cx.mul(&ct),
+            y: cy.mul(&cz),
+            z: cz.mul(&ct),
+            t: cx.mul(&cy),
+        }
+    }
+
     /// Point negation.
     pub fn negate(&self) -> Self {
         Self {
@@ -237,13 +294,21 @@ impl EdwardsPoint {
     /// `b` from the signature itself, so a data-dependent execution path here
     /// reveals nothing secret.
     pub fn vartime_double_scalar_mul_basepoint(a: &Scalar, big_a: &Self, b: &Scalar) -> Self {
-        // Odd multiples 1A, 3A, .., 15A for a width-5 NAF.
-        let mut odd_multiples = [Self::IDENTITY; 8];
-        odd_multiples[0] = *big_a;
+        // Odd multiples 1A, 3A, .., 15A, cached once in projective-Niels form so
+        // each reuse inside the loop is an 8-multiply mixed addition rather than
+        // a 9-multiply generic one that recomputes the same subterms.
         let double_a = big_a.double();
-        for i in 1..8 {
-            odd_multiples[i] = odd_multiples[i - 1].add(&double_a);
+        let mut multiple = *big_a;
+        let mut odd_a = [ProjectiveNiels::IDENTITY; 8];
+        odd_a[0] = multiple.to_projective_niels();
+        for slot in odd_a.iter_mut().skip(1) {
+            multiple = multiple.add(&double_a);
+            *slot = multiple.to_projective_niels();
         }
+
+        // The basepoint's odd multiples are constant; they are built once, in
+        // affine-Niels form (Z = 1), and shared across every verification.
+        let odd_b = basepoint_affine_odd_multiples();
 
         let a_naf = a.non_adjacent_form();
         let b_naf = b.non_adjacent_form();
@@ -256,19 +321,14 @@ impl EdwardsPoint {
         loop {
             acc = acc.double();
             if a_naf[i] > 0 {
-                acc = acc.add(&odd_multiples[(a_naf[i] as usize) / 2]);
+                acc = acc.add_projective_niels(&odd_a[(a_naf[i] as usize) / 2]);
             } else if a_naf[i] < 0 {
-                acc = acc.sub(&odd_multiples[((-a_naf[i]) as usize) / 2]);
+                acc = acc.add_projective_niels(&odd_a[((-a_naf[i]) as usize) / 2].negate());
             }
-            if b_naf[i] != 0 {
-                // The base point contribution reuses the same odd-multiple
-                // trick, recomputed here because the table is tiny.
-                let base_multiples = basepoint_odd_multiples();
-                if b_naf[i] > 0 {
-                    acc = acc.add(&base_multiples[(b_naf[i] as usize) / 2]);
-                } else {
-                    acc = acc.sub(&base_multiples[((-b_naf[i]) as usize) / 2]);
-                }
+            if b_naf[i] > 0 {
+                acc = acc.add_affine_niels(&odd_b[(b_naf[i] as usize) / 2]);
+            } else if b_naf[i] < 0 {
+                acc = acc.add_affine_niels(&odd_b[((-b_naf[i]) as usize) / 2].negate());
             }
             if i == 0 {
                 break;
@@ -276,6 +336,52 @@ impl EdwardsPoint {
             i -= 1;
         }
         acc
+    }
+}
+
+/// A point cached for repeated addition: `Y+X`, `Y-X`, `Z`, `2d*T`.
+#[derive(Clone, Copy)]
+struct ProjectiveNiels {
+    y_plus_x: Fe,
+    y_minus_x: Fe,
+    z: Fe,
+    t2d: Fe,
+}
+
+impl ProjectiveNiels {
+    const IDENTITY: Self = Self {
+        y_plus_x: Fe::ONE,
+        y_minus_x: Fe::ONE,
+        z: Fe::ONE,
+        t2d: Fe::ZERO,
+    };
+
+    /// Negation swaps the `Y±X` terms and negates `2d*T`.
+    fn negate(&self) -> Self {
+        Self {
+            y_plus_x: self.y_minus_x,
+            y_minus_x: self.y_plus_x,
+            z: self.z,
+            t2d: self.t2d.neg(),
+        }
+    }
+}
+
+/// A point with `Z = 1`, cached as `Y+X`, `Y-X`, `2d*X*Y`.
+#[derive(Clone, Copy)]
+struct AffineNiels {
+    y_plus_x: Fe,
+    y_minus_x: Fe,
+    xy2d: Fe,
+}
+
+impl AffineNiels {
+    fn negate(&self) -> Self {
+        Self {
+            y_plus_x: self.y_minus_x,
+            y_minus_x: self.y_plus_x,
+            xy2d: self.xy2d.neg(),
+        }
     }
 }
 
@@ -335,28 +441,45 @@ fn basepoint_table() -> &'static [[EdwardsPoint; 8]; 64] {
     })
 }
 
-/// Odd multiples `1B, 3B, .., 15B` used by variable-time verification.
-fn basepoint_odd_multiples() -> [EdwardsPoint; 8] {
+/// Odd multiples `1B, 3B, .., 15B` in affine-Niels form for variable-time
+/// verification. The basepoint is constant, so this table is built once and its
+/// entries have `Z = 1`, which is what makes the loop's basepoint additions cost
+/// seven multiplications instead of nine.
+fn basepoint_affine_odd_multiples() -> &'static [AffineNiels; 8] {
     #[cfg(feature = "std")]
     {
         use std::sync::OnceLock;
-        static ODD: OnceLock<[EdwardsPoint; 8]> = OnceLock::new();
-        *ODD.get_or_init(build_basepoint_odd_multiples)
+        static ODD: OnceLock<[AffineNiels; 8]> = OnceLock::new();
+        ODD.get_or_init(build_basepoint_affine_odd_multiples)
     }
     #[cfg(not(feature = "std"))]
     {
-        build_basepoint_odd_multiples()
+        // Without a place to cache it, rebuild per call. `no_std` verification
+        // is not the performance-critical path.
+        use std::boxed::Box;
+        Box::leak(Box::new(build_basepoint_affine_odd_multiples()))
     }
 }
 
-fn build_basepoint_odd_multiples() -> [EdwardsPoint; 8] {
+fn build_basepoint_affine_odd_multiples() -> [AffineNiels; 8] {
     let mut odd = [EdwardsPoint::IDENTITY; 8];
     odd[0] = BASEPOINT;
     let double_b = BASEPOINT.double();
     for i in 1..8 {
         odd[i] = odd[i - 1].add(&double_b);
     }
-    odd
+    // Normalize each to Z = 1 (one shared batchable inversion would be nicer,
+    // but this runs once per process) and cache the Niels subterms.
+    core::array::from_fn(|i| {
+        let z_inv = odd[i].z.invert();
+        let x = odd[i].x.mul(&z_inv);
+        let y = odd[i].y.mul(&z_inv);
+        AffineNiels {
+            y_plus_x: y.add(&x),
+            y_minus_x: y.sub(&x),
+            xy2d: x.mul(&y).mul(&D2),
+        }
+    })
 }
 
 /// An Ed25519 signing key.

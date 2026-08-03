@@ -216,7 +216,7 @@ mod arm {
     /// chain. PMULL has multi-cycle latency but issues every cycle, so breaking
     /// the chain is most of the difference between a slow GHASH and a fast one.
     struct Ghash {
-        powers: [uint8x16_t; 4],
+        powers: [uint8x16_t; 8],
         acc: uint8x16_t,
     }
 
@@ -229,10 +229,14 @@ mod arm {
                 let h2 = gf_mul(h, h);
                 let h3 = gf_mul(h2, h);
                 let h4 = gf_mul(h3, h);
+                let h5 = gf_mul(h4, h);
+                let h6 = gf_mul(h5, h);
+                let h7 = gf_mul(h6, h);
+                let h8 = gf_mul(h7, h);
                 // Ordered so `powers[i]` multiplies the i-th block of a group
-                // of four: H^4, H^3, H^2, H^1.
+                // of eight: H^8 down to H^1.
                 Self {
-                    powers: [h4, h3, h2, h],
+                    powers: [h8, h7, h6, h5, h4, h3, h2, h],
                     acc: vdupq_n_u8(0),
                 }
             }
@@ -244,12 +248,45 @@ mod arm {
             // exactly the 16 bytes of `block`.
             unsafe {
                 let value = reflect(vld1q_u8(block.as_ptr()));
-                self.acc = gf_mul(veorq_u8(self.acc, value), self.powers[3]);
+                self.acc = gf_mul(veorq_u8(self.acc, value), self.powers[7]);
             }
         }
 
         /// Absorb four blocks as
         /// `acc = (acc ^ b0)*H^4 ^ b1*H^3 ^ b2*H^2 ^ b3*H`.
+        /// Absorb eight blocks that are already in registers, with eight
+        /// independent multiplications and a single accumulator fold.
+        #[expect(clippy::too_many_arguments, reason = "registers, not an API")]
+        #[target_feature(enable = "aes,neon")]
+        unsafe fn absorb_eight_vectors(
+            &mut self,
+            c0: uint8x16_t,
+            c1: uint8x16_t,
+            c2: uint8x16_t,
+            c3: uint8x16_t,
+            c4: uint8x16_t,
+            c5: uint8x16_t,
+            c6: uint8x16_t,
+            c7: uint8x16_t,
+        ) {
+            // SAFETY: the caller guarantees AES and PMULL.
+            unsafe {
+                let b0 = veorq_u8(self.acc, reflect(c0));
+                let p0 = gf_mul(b0, self.powers[0]);
+                let p1 = gf_mul(reflect(c1), self.powers[1]);
+                let p2 = gf_mul(reflect(c2), self.powers[2]);
+                let p3 = gf_mul(reflect(c3), self.powers[3]);
+                let p4 = gf_mul(reflect(c4), self.powers[4]);
+                let p5 = gf_mul(reflect(c5), self.powers[5]);
+                let p6 = gf_mul(reflect(c6), self.powers[6]);
+                let p7 = gf_mul(reflect(c7), self.powers[7]);
+                self.acc = veorq_u8(
+                    veorq_u8(veorq_u8(p0, p1), veorq_u8(p2, p3)),
+                    veorq_u8(veorq_u8(p4, p5), veorq_u8(p6, p7)),
+                );
+            }
+        }
+
         /// Absorb four blocks that are already in registers.
         #[target_feature(enable = "aes,neon")]
         unsafe fn absorb_four_vectors(
@@ -262,10 +299,10 @@ mod arm {
             // SAFETY: the caller guarantees AES and PMULL.
             unsafe {
                 let b0 = veorq_u8(self.acc, reflect(c0));
-                let p0 = gf_mul(b0, self.powers[0]);
-                let p1 = gf_mul(reflect(c1), self.powers[1]);
-                let p2 = gf_mul(reflect(c2), self.powers[2]);
-                let p3 = gf_mul(reflect(c3), self.powers[3]);
+                let p0 = gf_mul(b0, self.powers[4]);
+                let p1 = gf_mul(reflect(c1), self.powers[5]);
+                let p2 = gf_mul(reflect(c2), self.powers[6]);
+                let p3 = gf_mul(reflect(c3), self.powers[7]);
                 self.acc = veorq_u8(veorq_u8(p0, p1), veorq_u8(p2, p3));
             }
         }
@@ -280,10 +317,10 @@ mod arm {
                 let b2 = reflect(vld1q_u8(data.add(32)));
                 let b3 = reflect(vld1q_u8(data.add(48)));
 
-                let p0 = gf_mul(b0, self.powers[0]);
-                let p1 = gf_mul(b1, self.powers[1]);
-                let p2 = gf_mul(b2, self.powers[2]);
-                let p3 = gf_mul(b3, self.powers[3]);
+                let p0 = gf_mul(b0, self.powers[4]);
+                let p1 = gf_mul(b1, self.powers[5]);
+                let p2 = gf_mul(b2, self.powers[6]);
+                let p3 = gf_mul(b3, self.powers[7]);
 
                 self.acc = veorq_u8(veorq_u8(p0, p1), veorq_u8(p2, p3));
             }
@@ -294,6 +331,20 @@ mod arm {
             // SAFETY: the caller guarantees AES and PMULL.
             unsafe {
                 let mut offset = 0;
+                while offset + 128 <= data.len() {
+                    let p = data.as_ptr().add(offset);
+                    self.absorb_eight_vectors(
+                        vld1q_u8(p),
+                        vld1q_u8(p.add(16)),
+                        vld1q_u8(p.add(32)),
+                        vld1q_u8(p.add(48)),
+                        vld1q_u8(p.add(64)),
+                        vld1q_u8(p.add(80)),
+                        vld1q_u8(p.add(96)),
+                        vld1q_u8(p.add(112)),
+                    );
+                    offset += 128;
+                }
                 while offset + 64 <= data.len() {
                     self.absorb_four(data.as_ptr().add(offset));
                     offset += 64;
@@ -363,6 +414,44 @@ mod arm {
             let mut offset = 0;
             let len = buffer.len();
             let base = buffer.as_mut_ptr();
+
+            // Eight blocks per pass. The AES rounds of all eight are
+            // independent, as are the eight PMULLs inside the GHASH step, so
+            // both pipelines stay full instead of waiting on a four-deep chain.
+            while offset + 128 <= len {
+                let k0 = encrypt_block(&round_keys, counter_block(nonce, counter));
+                let k1 = encrypt_block(&round_keys, counter_block(nonce, counter + 1));
+                let k2 = encrypt_block(&round_keys, counter_block(nonce, counter + 2));
+                let k3 = encrypt_block(&round_keys, counter_block(nonce, counter + 3));
+                let k4 = encrypt_block(&round_keys, counter_block(nonce, counter + 4));
+                let k5 = encrypt_block(&round_keys, counter_block(nonce, counter + 5));
+                let k6 = encrypt_block(&round_keys, counter_block(nonce, counter + 6));
+                let k7 = encrypt_block(&round_keys, counter_block(nonce, counter + 7));
+
+                let p = base.add(offset);
+                let c0 = veorq_u8(vld1q_u8(p), k0);
+                let c1 = veorq_u8(vld1q_u8(p.add(16)), k1);
+                let c2 = veorq_u8(vld1q_u8(p.add(32)), k2);
+                let c3 = veorq_u8(vld1q_u8(p.add(48)), k3);
+                let c4 = veorq_u8(vld1q_u8(p.add(64)), k4);
+                let c5 = veorq_u8(vld1q_u8(p.add(80)), k5);
+                let c6 = veorq_u8(vld1q_u8(p.add(96)), k6);
+                let c7 = veorq_u8(vld1q_u8(p.add(112)), k7);
+
+                vst1q_u8(p, c0);
+                vst1q_u8(p.add(16), c1);
+                vst1q_u8(p.add(32), c2);
+                vst1q_u8(p.add(48), c3);
+                vst1q_u8(p.add(64), c4);
+                vst1q_u8(p.add(80), c5);
+                vst1q_u8(p.add(96), c6);
+                vst1q_u8(p.add(112), c7);
+
+                ghash.absorb_eight_vectors(c0, c1, c2, c3, c4, c5, c6, c7);
+
+                counter = counter.wrapping_add(8);
+                offset += 128;
+            }
 
             while offset + 64 <= len {
                 let k0 = encrypt_block(&round_keys, counter_block(nonce, counter));
@@ -480,6 +569,30 @@ mod arm {
             let mut offset = 0;
             let len = buffer.len();
             let base = buffer.as_mut_ptr();
+
+            while offset + 128 <= len {
+                let k0 = encrypt_block(round_keys, counter_block(nonce, counter));
+                let k1 = encrypt_block(round_keys, counter_block(nonce, counter + 1));
+                let k2 = encrypt_block(round_keys, counter_block(nonce, counter + 2));
+                let k3 = encrypt_block(round_keys, counter_block(nonce, counter + 3));
+                let k4 = encrypt_block(round_keys, counter_block(nonce, counter + 4));
+                let k5 = encrypt_block(round_keys, counter_block(nonce, counter + 5));
+                let k6 = encrypt_block(round_keys, counter_block(nonce, counter + 6));
+                let k7 = encrypt_block(round_keys, counter_block(nonce, counter + 7));
+
+                let p = base.add(offset);
+                vst1q_u8(p, veorq_u8(vld1q_u8(p), k0));
+                vst1q_u8(p.add(16), veorq_u8(vld1q_u8(p.add(16)), k1));
+                vst1q_u8(p.add(32), veorq_u8(vld1q_u8(p.add(32)), k2));
+                vst1q_u8(p.add(48), veorq_u8(vld1q_u8(p.add(48)), k3));
+                vst1q_u8(p.add(64), veorq_u8(vld1q_u8(p.add(64)), k4));
+                vst1q_u8(p.add(80), veorq_u8(vld1q_u8(p.add(80)), k5));
+                vst1q_u8(p.add(96), veorq_u8(vld1q_u8(p.add(96)), k6));
+                vst1q_u8(p.add(112), veorq_u8(vld1q_u8(p.add(112)), k7));
+
+                counter = counter.wrapping_add(8);
+                offset += 128;
+            }
 
             // Four independent blocks keep the AES pipeline full: the
             // instruction has multi-cycle latency but issues every cycle.
