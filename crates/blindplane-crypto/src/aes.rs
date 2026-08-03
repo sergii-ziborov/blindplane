@@ -171,21 +171,11 @@ mod arm {
     }
 
     impl Unreduced {
-        const fn zero(zero: uint8x16_t) -> Self {
-            Self {
-                low: zero,
-                high: zero,
-            }
-        }
-
         #[target_feature(enable = "aes,neon")]
         unsafe fn xor(self, other: Self) -> Self {
-            // SAFETY: the caller guarantees NEON.
-            unsafe {
-                Self {
-                    low: veorq_u8(self.low, other.low),
-                    high: veorq_u8(self.high, other.high),
-                }
+            Self {
+                low: veorq_u8(self.low, other.low),
+                high: veorq_u8(self.high, other.high),
             }
         }
     }
@@ -193,8 +183,7 @@ mod arm {
     /// Karatsuba product without reduction: three 64x64 multiplies.
     #[target_feature(enable = "aes,neon")]
     unsafe fn gf_mul_wide(a: uint8x16_t, b: uint8x16_t) -> Unreduced {
-        // SAFETY: the caller guarantees the PMULL extension.
-        unsafe {
+        {
             let a_p: poly64x2_t = vreinterpretq_p64_u8(a);
             let b_p: poly64x2_t = vreinterpretq_p64_u8(b);
 
@@ -224,8 +213,7 @@ mod arm {
     /// Reduce a 256-bit product modulo `x^128 + x^7 + x^2 + x + 1`.
     #[target_feature(enable = "aes,neon")]
     unsafe fn gf_reduce(product: Unreduced) -> uint8x16_t {
-        // SAFETY: the caller guarantees the PMULL extension.
-        unsafe {
+        {
             let zero = vdupq_n_u8(0);
 
             // Fold x^128 back in: x^128 = x^7 + x^2 + x + 1, i.e. 0x87.
@@ -247,7 +235,8 @@ mod arm {
     /// Carry-less multiplication in GF(2^128), reduced.
     #[target_feature(enable = "aes,neon")]
     unsafe fn gf_mul(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
-        // SAFETY: the caller guarantees the PMULL extension.
+        // SAFETY: the caller guarantees the PMULL extension, which is the only
+        // precondition of both callees.
         unsafe { gf_reduce(gf_mul_wide(a, b)) }
     }
 
