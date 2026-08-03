@@ -230,7 +230,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 || text.is_empty() {
+    if !text.len().is_multiple_of(2) || text.is_empty() {
         return None;
     }
     let bytes = text.as_bytes();
