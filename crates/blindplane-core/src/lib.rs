@@ -383,7 +383,7 @@ pub fn seal(
         signature: vec![0_u8; 64],
     };
     author.sign(&mut record);
-    record.validate(&policy_for(author.public_key()))?;
+    validate_own(&record, &policy_for(author.public_key()))?;
     Ok(record)
 }
 
@@ -481,7 +481,7 @@ pub fn grant_recipient(
         (&left.recipient_id, left.key_epoch).cmp(&(&right.recipient_id, right.key_epoch))
     });
     author.sign(&mut updated);
-    updated.validate(&policy_for(author.public_key()))?;
+    validate_own(&updated, &policy_for(author.public_key()))?;
     Ok(updated)
 }
 
@@ -526,7 +526,7 @@ pub fn rekey(
         .checked_add(1)
         .ok_or(CryptoError::ManifestRevisionOverflow)?;
     author.sign(&mut next);
-    next.validate(&policy_for(author.public_key()))?;
+    validate_own(&next, &policy_for(author.public_key()))?;
     Ok(next)
 }
 
@@ -787,6 +787,34 @@ fn mac_bytes(mac: &mut HmacSha256, bytes: &[u8]) {
     let len = u64::try_from(bytes.len()).expect("usize fits into u64 on supported targets");
     mac.update(&len.to_be_bytes());
     mac.update(bytes);
+}
+
+/// Check a record we just signed ourselves.
+///
+/// Verifying our own fresh signature costs a third of the sealing time and
+/// proves nothing against an adversary: the key is ours and the bytes have not
+/// left the process. What it does catch is a hardware fault corrupting a
+/// deterministic Ed25519 signature, which RFC 8032 section 8.5 warns can leak
+/// the private key. That is a real but narrow threat, so the full check lives
+/// behind the `fault-resistant` feature.
+///
+/// The feature is phrased positively — enabling it *adds* the check — because
+/// Cargo unifies features additively. A negatively-phrased "skip the check"
+/// flag could be switched on by any crate anywhere in the dependency graph and
+/// would silently disable the protection process-wide.
+fn validate_own(record: &SealedRecord, policy: &ValidationPolicy) -> Result<(), CryptoError> {
+    if cfg!(feature = "fault-resistant") {
+        record.validate(policy)?;
+    } else {
+        record.validate_shape(policy)?;
+        if policy.allowed_signers.is_empty() {
+            return Err(CryptoError::Wire(WireError::NoTrustedSigners));
+        }
+        if !policy.allowed_signers.contains(&record.signer_public_key) {
+            return Err(CryptoError::Wire(WireError::UntrustedSigner));
+        }
+    }
+    Ok(())
 }
 
 fn policy_for(signer: [u8; 32]) -> ValidationPolicy {

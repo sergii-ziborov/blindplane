@@ -301,9 +301,35 @@ impl SealedRecord {
         Ok(())
     }
 
+    /// Check limits and canonical form, but not the signature.
+    ///
+    /// This exists for one caller: a signer checking its own freshly built
+    /// record. Verifying a signature you produced three lines earlier costs a
+    /// third of the sealing time and proves nothing about an adversary — the
+    /// key is yours and the bytes never left the process.
+    ///
+    /// It is not a substitute for [`validate`] on anything that arrived from
+    /// elsewhere. Every ingress path must still verify.
+    pub fn validate_shape(&self, policy: &ValidationPolicy) -> Result<(), WireError> {
+        self.validate_limits(policy)
+    }
+
     /// Verify limits, canonical form, and the self-declared signature without
     /// treating that signer as authorized. This is not authorization.
     pub fn validate_structure(&self, policy: &ValidationPolicy) -> Result<(), WireError> {
+        self.validate_limits(policy)?;
+
+        let signature: [u8; 64] = self
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| WireError::InvalidSignatureLength(self.signature.len()))?;
+        verify_strict(&self.signer_public_key, &self.signing_bytes(), &signature)
+            .map_err(|_| WireError::InvalidSignature)
+    }
+
+    /// Everything `validate_structure` checks except the signature itself.
+    fn validate_limits(&self, policy: &ValidationPolicy) -> Result<(), WireError> {
         if self.format_version != FORMAT_VERSION {
             return Err(WireError::UnsupportedFormat(self.format_version));
         }
@@ -368,13 +394,10 @@ impl SealedRecord {
             previous_index = Some(current);
         }
 
-        let signature: [u8; 64] = self
-            .signature
-            .as_slice()
-            .try_into()
-            .map_err(|_| WireError::InvalidSignatureLength(self.signature.len()))?;
-        verify_strict(&self.signer_public_key, &self.signing_bytes(), &signature)
-            .map_err(|_| WireError::InvalidSignature)
+        if self.signature.len() != 64 {
+            return Err(WireError::InvalidSignatureLength(self.signature.len()));
+        }
+        Ok(())
     }
 
     /// Find the envelope for one recipient and key epoch.

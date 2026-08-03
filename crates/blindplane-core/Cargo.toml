@@ -13,3 +13,10 @@ blindplane-wire = { path = "../blindplane-wire", version = "0.1.0" }
 
 [lints]
 workspace = true
+
+[features]
+# Re-verify our own freshly made signatures, to catch a hardware fault
+# corrupting a deterministic Ed25519 signature (RFC 8032 section 8.5). Costs
+# roughly a third of the sealing time. Phrased positively so that Cargo's
+# additive feature unification can only ever turn the protection ON.
+fault-resistant = []
