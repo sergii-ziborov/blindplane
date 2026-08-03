@@ -192,35 +192,50 @@ figures were captured on a shared developer machine, so the absolute GB/s runs
 low and varies between passes; every comparison below ran back-to-back under
 identical load, so the standings are stable even when the absolutes are not.
 
-**AEAD encryption, ratio to `ring` on this machine — higher is better**
+**AEAD encryption, GB/s at 1 MiB — median of three passes**
 
-| Implementation | Ours | `ring` | Ours ÷ `ring` |
+| Implementation | GB/s | vs `ring` |
+|---|---:|---:|
+| ring AES-256-GCM | 7.08 | 1.00x |
+| **Blindplane AES-256-GCM** | **6.64** | **0.94x** |
+| RustCrypto aes-gcm | 5.96 | 0.84x |
+| ring ChaCha20-Poly1305 | 1.99 | 1.00x |
+| **Blindplane ChaCha20-Poly1305** | **1.43** | **0.72x** |
+| RustCrypto chacha20poly1305 | 0.99 | 0.50x |
+
+**Hashing, GB/s at 64 KiB**
+
+| Implementation | SHA-256 | SHA-512 |
+|---|---:|---:|
+| ring | 2.91 | 1.63 |
+| RustCrypto | 2.51 | 1.67 |
+| **Blindplane** | **2.44** | **1.55** |
+
+**Public-key and protocol operations, ops/s — higher is better**
+
+| Operation | Blindplane | Reference | Ratio |
 |---|---:|---:|---:|
-| AES-256-GCM (1 MiB) | 6.0–6.3 GB/s | 6.3–6.5 | **≈0.95x** |
-| ChaCha20-Poly1305 (1 MiB) | 1.4–1.5 GB/s | 1.7 | **≈0.83x** |
+| X25519 Diffie-Hellman | **54 351** | 45 561 (`x25519-dalek`) | **1.19x** |
+| Ed25519 sign | **116 653** | 110 371 (`ed25519-dalek`) | **1.06x** |
+| Ed25519 verify (strict) | 37 889 | 50 150 (`ed25519-dalek`) | 0.76x |
+| HPKE seal | **24 303** | 23 902 (`hpke`) | **1.02x** |
+| Argon2id, 64 MiB × 3 | 10.6 | 11.5 (`argon2`) | 0.92x |
 
-Both moved a long way. AES-256-GCM was at **0.72x** of `ring` and is now
-**0.95x**, ahead of RustCrypto. ChaCha20-Poly1305 was at **0.42x** and is now
-**0.83x**. The remaining gap is `ring`'s hand-written assembly against this
-crate's Rust-plus-intrinsics — and the measured path that closes it entirely is
-below, under [Apple acceleration](#which-apple-hardware-actually-helps).
+**End-to-end sealed records** — a full record: fresh object secret, payload
+AEAD, one HPKE envelope per recipient, key commitment, Ed25519 signature and
+canonical encoding.
 
-**Public-key, hashing and protocol operations — higher is better**
+| Operation | records/s |
+|---|---:|
+| seal, 4 KiB, 1 recipient | 16 019 |
+| open, 4 KiB, 1 recipient | 16 557 |
+| seal, 4 KiB, 3 recipients | 6 727 |
+| seal batch, all 10 cores | 66 785 |
 
-| Operation | Standing vs the reference crate |
-|---|---|
-| X25519 Diffie-Hellman | **~1.4–1.6x faster** than `x25519-dalek` |
-| Ed25519 sign | **parity** with `ed25519-dalek` |
-| Ed25519 verify (strict) | **~0.75x** — behind; the full fix is on the roadmap |
-| SHA-256 | ~0.9x of `ring`, at parity with RustCrypto |
-| SHA-512 | **parity** with `ring` and RustCrypto (2.6x over the old scalar path) |
-| HPKE seal | **parity** with the `hpke` reference crate |
-| Argon2id, 64 MiB × 3 | ~0.9x of the `argon2` crate (password hashing — slow by design) |
-
-**End-to-end sealed records** — a 4 KiB record on one core seals at roughly ten
-thousand per second and opens at nearly twice that; batch sealing scales across
-all ten cores. The payload AEAD is under 1% of a record — the cost is the
-curve and signature work, which is where the record-path roadmap items aim.
+Where we lead: X25519, Ed25519 signing, HPKE, and the whole-record path. Where
+we trail: bulk symmetric throughput against `ring`'s hand-written assembly, and
+Ed25519 verification. Both are named in the [roadmap](#roadmap) with the
+technique that would close them.
 
 ### What the acceleration pass changed
 

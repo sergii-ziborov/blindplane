@@ -16,24 +16,24 @@ Throughput in GB/s over plaintext bytes, with 16 bytes of associated data.
 
 | Implementation | 1 KiB | 64 KiB | 1 MiB |
 |---|---:|---:|---:|
-| **Blindplane AES-256-GCM** | 3.09 | 6.87 | 6.91 |
-| **Blindplane ChaCha20-Poly1305** | 1.17 | 1.50 | 1.50 |
-| **Blindplane XChaCha20-Poly1305** | 1.08 | 1.50 | 1.49 |
-| ring AES-256-GCM | 4.96 | 7.40 | 7.38 |
-| ring ChaCha20-Poly1305 | 1.51 | 2.04 | 2.06 |
-| RustCrypto aes-gcm | 5.73 | 6.19 | 6.20 |
-| RustCrypto chacha20poly1305 | 0.86 | 1.03 | 1.03 |
+| **Blindplane AES-256-GCM** | 2.93 | 6.52 | 6.72 |
+| **Blindplane ChaCha20-Poly1305** | 1.15 | 1.47 | 1.36 |
+| **Blindplane XChaCha20-Poly1305** | 1.04 | 1.46 | 1.41 |
+| ring AES-256-GCM | 4.76 | 7.10 | 6.86 |
+| ring ChaCha20-Poly1305 | 1.43 | 1.93 | 1.94 |
+| RustCrypto aes-gcm | 5.30 | 5.87 | 5.90 |
+| RustCrypto chacha20poly1305 | 0.81 | 0.97 | 0.98 |
 
 ## SHA-256
 
 | Implementation | 64 KiB |
 |---|---:|
-| **Blindplane SHA-256** | 2.63 |
-| RustCrypto sha2 | 2.72 |
-| ring | 3.19 |
-| **Blindplane SHA-512** | 1.59 |
-| RustCrypto sha2 (512) | 1.80 |
-| ring (512) | 1.75 |
+| **Blindplane SHA-256** | 2.42 |
+| RustCrypto sha2 | 2.50 |
+| ring | 2.87 |
+| **Blindplane SHA-512** | 1.57 |
+| RustCrypto sha2 (512) | 1.66 |
+| ring (512) | 1.59 |
 
 ## Public-key operations
 
@@ -41,16 +41,16 @@ Operations per second on one core.
 
 | Operation | Blindplane | Competitor | Ratio |
 |---|---:|---:|---:|
-| X25519 Diffie-Hellman | 56664 | 47495 (x25519-dalek) | 1.19x |
-| Ed25519 sign | 121239 | 114481 (ed25519-dalek) | 1.06x |
-| Ed25519 verify (strict) | 39442 | 52392 (ed25519-dalek) | 0.75x |
+| X25519 Diffie-Hellman | 53722 | 45199 (x25519-dalek) | 1.19x |
+| Ed25519 sign | 115543 | 107870 (ed25519-dalek) | 1.07x |
+| Ed25519 verify (strict) | 36924 | 49654 (ed25519-dalek) | 0.74x |
 
 ## HPKE (RFC 9180) single-shot seal
 
 | Implementation | ops/s |
 |---|---:|
-| **Blindplane HPKE** | 25450 |
-| hpke crate | 24972 |
+| **Blindplane HPKE** | 23986 |
+| hpke crate | 23616 |
 
 ## Argon2id, m=64 MiB, t=3, p=1
 
@@ -58,8 +58,8 @@ Password hashing is meant to be slow. Parity with the reference implementation i
 
 | Implementation | ops/s | ms per hash |
 |---|---:|---:|
-| **Blindplane Argon2id** | 11.6 | 86.2 |
-| argon2 crate | 13.4 | 74.5 |
+| **Blindplane Argon2id** | 10.5 | 95.1 |
+| argon2 crate | 12.1 | 82.4 |
 
 ## End-to-end sealed records
 
@@ -67,10 +67,10 @@ A full record: fresh object secret, payload AEAD, one HPKE envelope per recipien
 
 | Operation | ops/s |
 |---|---:|
-| seal, 4 KiB, 1 recipient | 16835 |
-| open, 4 KiB, 1 recipient | 17737 |
-| seal, 4 KiB, 3 recipients | 7124 |
-| seal batch, all cores (records/s) | 72196 |
+| seal, 4 KiB, 1 recipient | 16334 |
+| open, 4 KiB, 1 recipient | 17468 |
+| seal, 4 KiB, 3 recipients | 6896 |
+| seal batch, all cores (records/s) | 71976 |
 
 Batch sealing scales across cores: each record has its own object secret, so nothing is shared and nothing needs locking.
 

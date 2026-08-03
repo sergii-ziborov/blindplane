@@ -100,12 +100,19 @@ impl ChaCha20 {
             let mut keystream = [0_u8; 256];
 
             while offset < data.len() {
+                let counter = self.state[12];
                 self.four_blocks(&mut keystream);
                 let take = core::cmp::min(256, data.len() - offset);
                 for (byte, key) in data[offset..offset + take].iter_mut().zip(keystream.iter()) {
                     *byte ^= *key;
                 }
                 offset += take;
+
+                // `four_blocks` always advances by four, but a short tail
+                // consumes fewer; a later call on the same generator has to
+                // resume at the next unused block, not skip ahead.
+                let blocks = take.div_ceil(64) as u32;
+                self.state[12] = counter.wrapping_add(blocks);
             }
             crate::util::secure_erase(&mut keystream);
         }
