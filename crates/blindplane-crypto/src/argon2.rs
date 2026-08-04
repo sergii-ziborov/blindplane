@@ -414,56 +414,28 @@ fn compress_blocks(x: &Block, y: &Block) -> Block {
     }
     let mut z = r;
 
-    // Rows: eight 16-word groups.
+    // Rows: eight 16-word groups, each contiguous, permuted in place. No
+    // gather is needed — a row *is* the sixteen-word window.
     for row in 0..8 {
-        let base = row * 16;
-        permute(
-            &mut z,
-            [
-                base,
-                base + 1,
-                base + 2,
-                base + 3,
-                base + 4,
-                base + 5,
-                base + 6,
-                base + 7,
-                base + 8,
-                base + 9,
-                base + 10,
-                base + 11,
-                base + 12,
-                base + 13,
-                base + 14,
-                base + 15,
-            ],
-        );
+        let window =
+            <&mut [u64; 16]>::try_from(&mut z[row * 16..row * 16 + 16]).expect("sixteen words");
+        permute(window);
     }
 
-    // Columns: eight interleaved 16-word groups.
+    // Columns: pairs (base, base+1) from each of the eight rows, gathered
+    // with constant strides into a local window and scattered back.
     for col in 0..8 {
         let base = col * 2;
-        permute(
-            &mut z,
-            [
-                base,
-                base + 1,
-                base + 16,
-                base + 17,
-                base + 32,
-                base + 33,
-                base + 48,
-                base + 49,
-                base + 64,
-                base + 65,
-                base + 80,
-                base + 81,
-                base + 96,
-                base + 97,
-                base + 112,
-                base + 113,
-            ],
-        );
+        let mut v = [0_u64; 16];
+        for k in 0..8 {
+            v[2 * k] = z[base + 16 * k];
+            v[2 * k + 1] = z[base + 16 * k + 1];
+        }
+        permute(&mut v);
+        for k in 0..8 {
+            z[base + 16 * k] = v[2 * k];
+            z[base + 16 * k + 1] = v[2 * k + 1];
+        }
     }
 
     for i in 0..QWORDS {
@@ -472,25 +444,17 @@ fn compress_blocks(x: &Block, y: &Block) -> Block {
     z
 }
 
-/// The BLAKE2b-derived permutation `P` over sixteen selected words.
-fn permute(state: &mut Block, i: [usize; 16]) {
-    let mut v = [0_u64; 16];
-    for (slot, index) in v.iter_mut().zip(i.iter()) {
-        *slot = state[*index];
-    }
-
-    blamka(&mut v, 0, 4, 8, 12);
-    blamka(&mut v, 1, 5, 9, 13);
-    blamka(&mut v, 2, 6, 10, 14);
-    blamka(&mut v, 3, 7, 11, 15);
-    blamka(&mut v, 0, 5, 10, 15);
-    blamka(&mut v, 1, 6, 11, 12);
-    blamka(&mut v, 2, 7, 8, 13);
-    blamka(&mut v, 3, 4, 9, 14);
-
-    for (index, value) in i.iter().zip(v.iter()) {
-        state[*index] = *value;
-    }
+/// The BLAKE2b-derived permutation `P` over a sixteen-word window.
+#[inline(always)]
+fn permute(v: &mut [u64; 16]) {
+    blamka(v, 0, 4, 8, 12);
+    blamka(v, 1, 5, 9, 13);
+    blamka(v, 2, 6, 10, 14);
+    blamka(v, 3, 7, 11, 15);
+    blamka(v, 0, 5, 10, 15);
+    blamka(v, 1, 6, 11, 12);
+    blamka(v, 2, 7, 8, 13);
+    blamka(v, 3, 4, 9, 14);
 }
 
 #[inline(always)]
