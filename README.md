@@ -97,6 +97,18 @@ let plaintext = open(&record, &alice, author.public_key())?;
 assert_eq!(plaintext.as_bytes(), b"the relay never sees this");
 ```
 
+Opening many records from one pinned author — a sync, in other words — prepares
+that author's verification state once instead of per record, worth 1.09x:
+
+```rust
+use blindplane_core::{PinnedSigner, open_pinned};
+
+let pinned = PinnedSigner::new(author.public_key())?;
+for record in incoming {
+    let plaintext = open_pinned(&record, &alice, &pinned)?;
+}
+```
+
 Serving it through Blazingly is four lines:
 
 ```rust
@@ -110,6 +122,27 @@ Run the self-check:
 
 ```bash
 cargo run -p blindplane-cli -- selfcheck
+```
+
+Two runnable examples carry the rest. `sealed_api` walks one record's whole
+life through the HTTP surface — identities, seal, store, blind-index search,
+fetch, open — with the reason for each step in a comment:
+
+```bash
+cargo run -p blindplane-blazingly --example sealed_api
+```
+
+`overhead` answers the question that decides an integration. It stands two
+services side by side on the same framework, one holding plaintext in a map
+and one holding sealed records, and prints where a sealed round trip's time
+actually goes. The answer is not the expected one: base64 and JSON cost more
+than every cryptographic operation combined. It then asserts the three
+properties the sealed side buys and the plaintext side cannot have —
+everything stored is ciphertext, an unpinned signer is refused, and one
+flipped bit fails authentication:
+
+```bash
+cargo run --release -p blindplane-blazingly --example overhead
 ```
 
 ## Security posture
@@ -173,11 +206,34 @@ Correctness is not asserted, it is tested:
   truncated and oversized encodings are refused before allocating; unpinned
   signers, substituted recipient fingerprints and replayed records all fail
   closed.
+- **Independent references, on purpose** — the differential tests compare
+  against implementations that share no code, no representation and no
+  reduction strategy with the production path: a school-arithmetic Poly1305
+  written straight from the RFC pseudocode, a from-scratch scalar ChaCha20.
+  That redundancy is not duplication to be cleaned up; it is what caught a
+  real multi-block SIMD divergence that every known-answer test passed.
 
 These crates are dev-dependencies. None can reach a shipped binary.
 
 ```bash
 cargo test --workspace
+```
+
+Auditability is also a layout question. No file in this workspace exceeds 300
+lines, so every primitive is a directory whose pieces — the key schedule, the
+GHASH, the sealing — can be read one at a time rather than scrolled past:
+
+```bash
+find crates -name '*.rs' | xargs wc -l | sort -rn | head
+```
+
+The configurations that must stay green, all of them enforced in CI:
+
+```bash
+cargo test --workspace --all-targets --all-features
+cargo test -p blindplane-crypto --no-default-features --features std
+cargo check -p blindplane-crypto --no-default-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 ## Benchmarks
@@ -186,74 +242,69 @@ Full results, methodology and machine details: [`results/benchmarks.md`](results
 Reproduce with `cargo run --release -p blindplane-bench`.
 
 Measured on an Apple M4 (4 performance + 6 efficiency cores), rustc 1.96.1.
-Each figure is the median of five rounds of at least 250 ms, identical inputs
-for every implementation, outputs checked; the run below is the middle of
-three full passes, which agreed within 3% on every single-core row.
-**Report ratios, not absolutes.** This is a developer machine with background
-load, so absolutes drift between sessions; every comparison ran back-to-back
-in one process, so the standings hold even when the absolutes move.
+Every figure is the median of five rounds of at least 250 ms; every
+implementation gets identical inputs in the same process and has its output
+checked, so a fast wrong answer cannot win.
 
-> **Same-day addendum.** Five commits landed after this capture, and the
-> machine never went quiet enough for an honest full re-run. Measured paired
-> in one process: Ed25519 verify 0.75x → **0.89x** of dalek, Argon2id 0.86x →
-> **1.02x** of the `argon2` crate, short-message AES-GCM **+7–11%**. The
-> tables below are the last quiet-machine capture and understate those three
-> rows; a re-capture replaces this note.
+**These are ratios, and that is deliberate.** This is a working developer
+machine, and its absolute throughput moves by a factor of two depending on
+what else is running — a number in GB/s here would say more about the browser
+than about the code. What survives that is the paired comparison: competitor
+and candidate run back-to-back in one process under the same conditions. The
+ratios below are the median of three full passes that agreed to within 0.01
+on every row. Absolute figures, from the last capture taken on a quiet
+machine, are in [`results/benchmarks.md`](results/benchmarks.md).
 
-**AEAD encryption, GB/s — higher is better**
+**Symmetric, against `ring`'s hand-written assembly** — higher is better
 
-| Implementation | 1 KiB | 64 KiB | 1 MiB |
-|---|---:|---:|---:|
-| ring AES-256-GCM | 5.20 | 7.74 | 7.36 |
-| **Blindplane AES-256-GCM** | 3.20 | **7.23** | **7.37** |
-| RustCrypto aes-gcm | 5.95 | 6.47 | 6.46 |
-| ring ChaCha20-Poly1305 | 1.61 | 2.15 | 2.17 |
-| **Blindplane ChaCha20-Poly1305** | **1.41** | **1.92** | **1.93** |
-| RustCrypto chacha20poly1305 | 0.92 | 1.09 | 1.09 |
-
-ChaCha20-Poly1305 stood at 0.72x of `ring` before the fused seal pass and the
-base-2^64 Poly1305; it is now 0.89–0.90x at every size. AES-256-GCM is 0.93x
-at 64 KiB and parity at 1 MiB. The honest weak row is short-message AES-GCM:
-0.62x of `ring` at 1 KiB in this capture — every seal pays the full key
-schedule and GHASH table setup, of which the addendum's setup trim has since
-recovered +7%. RustCrypto's aes-gcm leads everyone at 1 KiB for the same
-reason in reverse — its cipher object amortises setup across calls, a shape
-our fresh-key-per-record API deliberately does not have.
-
-**Hashing, GB/s at 64 KiB**
-
-| Implementation | SHA-256 | SHA-512 |
-|---|---:|---:|
-| ring | 3.39 | 1.90 |
-| RustCrypto | 2.90 | 1.95 |
-| **Blindplane** | 2.82 | 1.67 |
-
-**Public-key and protocol operations, ops/s — higher is better**
-
-| Operation | Blindplane | Reference | Ratio |
-|---|---:|---:|---:|
-| X25519 Diffie-Hellman | **58 855** | 49 533 (`x25519-dalek`) | **1.19x** |
-| Ed25519 sign | **124 093** | 119 283 (`ed25519-dalek`) | **1.04x** |
-| Ed25519 verify (strict) | 41 015 | 54 560 (`ed25519-dalek`) | 0.75x |
-| HPKE seal | **26 598** | 26 056 (`hpke`) | **1.02x** |
-| Argon2id, 64 MiB × 3 | 12.9 | 15.0 (`argon2`) | 0.86x |
-
-**End-to-end sealed records** — a full record: fresh object secret, payload
-AEAD, one HPKE envelope per recipient, key commitment, Ed25519 signature and
-canonical encoding.
-
-| Operation | records/s |
+| Operation | vs `ring` |
 |---|---:|
-| seal, 4 KiB, 1 recipient | 17 600 |
-| open, 4 KiB, 1 recipient | 19 372 |
-| seal, 4 KiB, 3 recipients | 7 445 |
-| seal batch, all 10 cores | 75 507 |
+| AES-256-GCM, 1 MiB | **0.93x** |
+| AES-256-GCM, 64 KiB | **0.94x** |
+| AES-256-GCM, 1 KiB | 0.69x |
+| ChaCha20-Poly1305, 64 KiB | **0.88x** |
+| ChaCha20-Poly1305, 1 KiB | **0.89x** |
+| SHA-512, 64 KiB | **0.96x** |
+| SHA-256, 64 KiB | 0.83x |
 
-Where we lead: X25519, Ed25519 signing, HPKE, Argon2id (as of the addendum),
-and the whole-record path. Where we trail: Ed25519 verification (0.89x after
-the addendum), hashing against `ring`'s assembly, and short-message AES-GCM.
-Each is named in the [roadmap](#roadmap) with the technique that would close
-it.
+ChaCha20-Poly1305 stood at 0.72x before the fused seal pass and the base-2^64
+Poly1305 — the two techniques the literature review named first. The honest
+weak row is short-message AES-GCM at 0.69x, and the reason is a design choice
+rather than a defect: every record gets a fresh key, so every seal pays a key
+schedule and a GHASH table that `ring` and RustCrypto amortise across calls
+from a long-lived cipher object. Trimming that setup bought back 7–11%; the
+rest is the API's shape.
+
+**Public-key and protocol** — higher is better
+
+| Operation | vs reference |
+|---|---:|
+| X25519 Diffie-Hellman | **1.19x** (`x25519-dalek`) |
+| Ed25519 verify, pinned author | **1.09x** (`ed25519-dalek`) |
+| Ed25519 sign | **1.06x** (`ed25519-dalek`) |
+| HPKE seal | **1.02x** (`hpke`) |
+| Argon2id, 64 MiB × 3 | **1.02x** (`argon2`) |
+| Ed25519 verify, cold key | 0.88x (`ed25519-dalek`) |
+
+The two Ed25519 verification rows are the same algorithm differing only in
+who pays for the key. The cold row parses the public key, rejects small-order
+points and builds its tables on every call; dalek's `VerifyingKey` is a
+pre-parsed point, so that row compares a from-scratch verification against one
+that starts halfway. Records are verified far more often than authors change,
+so `PinnedSigner` does the same preparation once per session — and then leads.
+
+**End-to-end sealed records.** A record is a fresh object secret, payload
+AEAD, one HPKE envelope per recipient, a key commitment, an Ed25519 signature
+and a canonical encoding. Opening against a pinned author runs **1.09x** the
+cold path (three runs, spread 0.004). Sealing parallelises cleanly across
+cores: each record has its own object secret, so nothing is shared and nothing
+locks — the batch path reaches roughly **4.5x** the single-core rate on ten
+cores of this asymmetric chip.
+
+Where we lead: X25519, Ed25519 signing and pinned verification, HPKE,
+Argon2id, and the whole-record path. Where we trail: SHA-256 against `ring`'s
+assembly, and short-message AES-GCM. Both are named in the
+[roadmap](#roadmap) with the technique that would close them.
 
 ### What the acceleration pass changed
 
@@ -376,9 +427,11 @@ from 0.72x of `ring` to 0.90x; what remains of that path is below.
    turns "constant time" from an assumption about undocumented microarchitecture
    into an architectural guarantee.
 5. **A PAKE (OPAQUE)** so a stolen vault blob is not offline-attackable.
-6. **The last of Ed25519 verify** (0.89x): the algorithm now matches dalek's —
-   width-8 NAF, T-free doublings, affine-Niels table — so what remains is the
-   same field-arithmetic scheduling as the next item.
+6. **The cold Ed25519 verify path** (0.88x; the pinned path already leads at
+   1.09x). The algorithm now matches dalek's — width-8 NAF, T-free doublings,
+   affine-Niels tables — so what remains is the same field-arithmetic
+   scheduling as the next item, plus the fact that a cold verify parses its
+   key and dalek's `VerifyingKey` does not.
 7. **Curve25519 scheduling** before any representation change — we are roughly
    2.2x above our own theoretical floor, and published work reports 1.9x from
    scheduling alone.

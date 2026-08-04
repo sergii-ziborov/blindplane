@@ -75,18 +75,28 @@ A full record: fresh object secret, payload AEAD, one HPKE envelope per recipien
 Batch sealing scales across cores: each record has its own object secret, so nothing is shared and nothing needs locking.
 
 
-## Addendum: changes after this capture, same day
+## Addendum: what changed after this capture
 
-This file is the last full capture on a quiet machine, taken at commit
-`2710638`. Five optimisation commits landed after it, and the machine never
-went quiet again that day, so their effect is recorded here as paired
-same-process ratios — the form that survives ambient load — rather than as
-fresh absolute rows. The stale rows above understate us:
+The tables above are the last capture taken on a quiet machine. Work landed
+after it, and the machine did not go quiet again — background load halves the
+absolutes here, which is exactly why the standings are published as ratios.
 
-| Row | This file says | Paired, after the changes |
+Paired ratios, median of three full passes taken under load, agreeing to
+within 0.01 on every row:
+
+| Row | This capture | Now |
 |---|---|---|
-| Ed25519 verify (strict) | 0.75x of `ed25519-dalek` | **0.89x** |
-| Argon2id, 64 MiB x 3 | 0.86x of the `argon2` crate | **1.02x** |
-| AES-256-GCM below 1 KiB | 3.20 GB/s at 1 KiB | **+7%** at 1 KiB, **+11%** at 256 B |
+| ChaCha20-Poly1305 vs `ring`, 64 KiB | 0.89x | **0.88x** (unchanged within noise) |
+| AES-256-GCM vs `ring`, 64 KiB | 0.93x | **0.94x** |
+| Ed25519 verify vs dalek | 0.75x | **0.88x** cold, **1.09x** with a pinned author |
+| Argon2id vs the `argon2` crate | 0.86x | **1.02x** |
+| open, 4 KiB | — | **1.09x** with a pinned author over the cold path |
 
-A full quiet-machine re-capture replaces this addendum.
+The two rows the harness gained — `Ed25519 verify (prepared author)` and
+`open, 4 KiB, pinned author` — measure the shape a sync actually has: one
+author pinned per session, many records verified against it.
+
+A capture on a genuinely idle machine replaces this addendum. Gate it on a
+load average at or below 4 *and* a sanity probe: if `ring` does not reach
+about 7.7 GB/s on AES-256-GCM at 64 KiB, the machine is not quiet and the
+absolutes are not worth recording.
