@@ -307,7 +307,12 @@ impl EdwardsPoint {
         // affine-Niels form (Z = 1), and shared across every verification.
         // Width 8 against the by-key table's width 5: a wider window pays a
         // bigger table, which for the fixed basepoint costs nothing per call.
+        #[cfg(feature = "std")]
         let odd_b = basepoint_affine_odd_multiples();
+        // Without a place to cache the table, rebuild it per call. `no_std`
+        // verification is not the performance-critical path.
+        #[cfg(not(feature = "std"))]
+        let odd_b = &build_basepoint_affine_odd_multiples();
 
         let a_naf = a.non_adjacent_form(5);
         let b_naf = b.non_adjacent_form(8);
@@ -517,20 +522,11 @@ fn basepoint_table() -> &'static [[EdwardsPoint; 8]; 64] {
 /// verification. The basepoint is constant, so this table is built once and its
 /// entries have `Z = 1`, which is what makes the loop's basepoint additions the
 /// cheapest addition there is.
+#[cfg(feature = "std")]
 fn basepoint_affine_odd_multiples() -> &'static [AffineNiels; 64] {
-    #[cfg(feature = "std")]
-    {
-        use std::sync::OnceLock;
-        static ODD: OnceLock<[AffineNiels; 64]> = OnceLock::new();
-        ODD.get_or_init(build_basepoint_affine_odd_multiples)
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        // Without a place to cache it, rebuild per call. `no_std` verification
-        // is not the performance-critical path.
-        use std::boxed::Box;
-        Box::leak(Box::new(build_basepoint_affine_odd_multiples()))
-    }
+    use std::sync::OnceLock;
+    static ODD: OnceLock<[AffineNiels; 64]> = OnceLock::new();
+    ODD.get_or_init(build_basepoint_affine_odd_multiples)
 }
 
 fn build_basepoint_affine_odd_multiples() -> [AffineNiels; 64] {

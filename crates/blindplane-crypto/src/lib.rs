@@ -41,6 +41,18 @@
 //! vectors and cross-checked against established implementations, which is not
 //! the same thing as an audit. Treat it accordingly.
 //!
+//! # Feature flags
+//!
+//! * `std` (default) — operating-system entropy (`rand`, the `generate`
+//!   constructors) and everything that returns a heap buffer: `hpke`,
+//!   `simple`, `argon2`, and the `Vec`-based [`aead::Suite`] conveniences.
+//! * `accel` (default, implies `std`) — the CPU instruction paths, selected
+//!   by runtime detection.
+//!
+//! With `--no-default-features` the crate is `no_std` and allocation-free:
+//! SHA-2, HMAC, HKDF, the in-place AEAD calls, X25519 and Ed25519 signing
+//! and verification all remain available, with keys supplied by the caller.
+//!
 //! # Example
 //!
 //! ```
@@ -70,15 +82,14 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-#[cfg(feature = "std")]
-extern crate alloc;
-
 pub mod aead;
 pub mod aes;
+#[cfg(feature = "std")]
 pub mod argon2;
 pub mod chacha;
 pub mod edwards;
 pub mod field;
+#[cfg(feature = "std")]
 pub mod hpke;
 pub mod kdf;
 pub mod montgomery;
@@ -87,6 +98,7 @@ pub mod poly1305;
 pub mod rand;
 pub mod scalar;
 pub mod sha2;
+#[cfg(feature = "std")]
 pub mod simple;
 pub mod util;
 
@@ -95,6 +107,7 @@ pub use edwards::{SignatureError, SigningKey, verify_strict};
 pub use kdf::{HmacSha256, HmacSha512, hkdf, hkdf_expand, hkdf_extract};
 pub use montgomery::StaticSecret;
 pub use sha2::{Sha256, Sha512};
+#[cfg(feature = "std")]
 pub use simple::{Key, hash_password, verify_password};
 pub use util::{Choice, Secret, ct_eq_bytes, secure_erase};
 

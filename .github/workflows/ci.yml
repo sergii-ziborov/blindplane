@@ -36,6 +36,10 @@ jobs:
       # Without `accel` the crate contains no `unsafe` at all and must still
       # pass every published test vector.
       - run: cargo test -p blindplane-crypto --no-default-features --features std
+      # The advertised `no-std::no-alloc` configuration. The test suite needs
+      # std, so this is a build check: it proves the core compiles with no
+      # operating system and no allocator, warnings denied.
+      - run: cargo check -p blindplane-crypto --no-default-features
 
   lint:
     name: clippy and rustfmt

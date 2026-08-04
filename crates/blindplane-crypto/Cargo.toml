@@ -18,7 +18,8 @@ std = []
 # CPU cryptographic extensions (ARMv8 AES/PMULL/SHA-2, x86-64 AES-NI/PCLMULQDQ).
 # Disabling this leaves the portable implementations, which produce identical
 # output, and removes every `unsafe` block from the compiled crate.
-accel = []
+# Needs `std`: the hardware paths are selected by runtime CPU detection.
+accel = ["std"]
 
 [dev-dependencies]
 # Third-party implementations are used **only** to cross-check our own output in

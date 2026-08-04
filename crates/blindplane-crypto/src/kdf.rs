@@ -44,7 +44,7 @@ impl HmacSha256 {
 
     /// Finish and return the tag.
     pub fn finalize(mut self) -> [u8; 32] {
-        let inner = std::mem::take(&mut self.inner).finalize();
+        let inner = core::mem::take(&mut self.inner).finalize();
         let mut outer = Sha256::new();
         outer.update(&self.outer_key);
         outer.update(&inner);
@@ -111,7 +111,7 @@ impl HmacSha512 {
 
     /// Finish and return the tag.
     pub fn finalize(mut self) -> [u8; 64] {
-        let inner = std::mem::take(&mut self.inner).finalize();
+        let inner = core::mem::take(&mut self.inner).finalize();
         let mut outer = Sha512::new();
         outer.update(&self.outer_key);
         outer.update(&inner);
