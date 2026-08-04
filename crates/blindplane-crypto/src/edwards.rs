@@ -392,7 +392,7 @@ struct CompletedPoint {
 
 impl CompletedPoint {
     /// Three multiplies; enough when the next operation is a doubling.
-    fn to_projective(&self) -> ProjectivePoint {
+    fn to_projective(self) -> ProjectivePoint {
         ProjectivePoint {
             x: self.e.mul(&self.f),
             y: self.g.mul(&self.h),
@@ -401,7 +401,7 @@ impl CompletedPoint {
     }
 
     /// Four multiplies; needed when the next operation is an addition.
-    fn to_extended(&self) -> EdwardsPoint {
+    fn to_extended(self) -> EdwardsPoint {
         EdwardsPoint {
             x: self.e.mul(&self.f),
             y: self.g.mul(&self.h),
