@@ -213,6 +213,14 @@ fn xchacha_split(key: &[u8; 32], nonce: &[u8]) -> (Secret<32>, [u8; 12]) {
     (Secret::new(subkey), inner)
 }
 
+/// Bytes sealed per step of the fused encrypt-and-MAC loop.
+///
+/// 512 is one pass of the cipher's eight-block fast path. The cipher runs on
+/// the vector pipes and Poly1305 on the scalar multiplier, so once a chunk is
+/// encrypted its MAC costs overlap with encrypting the next chunk; the
+/// out-of-order window does the interleaving that fused assembly does by hand.
+const FUSE_CHUNK: usize = 512;
+
 fn chacha20poly1305_seal(
     key: &[u8; 32],
     nonce: &[u8; 12],
@@ -220,11 +228,15 @@ fn chacha20poly1305_seal(
     buffer: &mut [u8],
 ) -> [u8; TAG_LEN] {
     let mut mac = Poly1305::new(&poly_key(key, nonce));
-    ChaCha20::new(key, nonce, 1).apply_keystream(buffer);
-
     mac.update(associated_data);
     mac.pad_to_block();
-    mac.update(buffer);
+
+    let mut cipher = ChaCha20::new(key, nonce, 1);
+    for chunk in buffer.chunks_mut(FUSE_CHUNK) {
+        cipher.apply_keystream(chunk);
+        mac.update(chunk);
+    }
+
     mac.pad_to_block();
     mac.update(&(associated_data.len() as u64).to_le_bytes());
     mac.update(&(buffer.len() as u64).to_le_bytes());
