@@ -130,10 +130,10 @@ impl Scalar {
     ///
     /// Only public values are ever passed through this, so the data-dependent
     /// length of the NAF is not a leak.
-    pub fn non_adjacent_form(&self) -> [i8; 256] {
-        const WIDTH: u64 = 5;
-        const RADIX: u64 = 1 << WIDTH;
-        const WINDOW_MASK: u64 = RADIX - 1;
+    pub fn non_adjacent_form(&self, width: u32) -> [i8; 256] {
+        debug_assert!((2..=8).contains(&width), "digits must fit an i8");
+        let radix: u64 = 1 << width;
+        let window_mask: u64 = radix - 1;
 
         let mut naf = [0_i8; 256];
         let mut x = [0_u64; 5];
@@ -144,30 +144,32 @@ impl Scalar {
         while pos < 256 {
             let limb = pos / 64;
             let bit = pos % 64;
-            // Read five bits, crossing a limb boundary when necessary. The
+            // Read a window, crossing a limb boundary when necessary. The
             // fifth limb exists only so this read is always in bounds.
-            let window_bits = if bit < 64 - WIDTH as usize {
+            let window_bits = if bit < 64 - width as usize {
                 x[limb] >> bit
             } else {
                 (x[limb] >> bit) | (x[limb + 1] << (64 - bit))
             };
 
-            let window = carry + (window_bits & WINDOW_MASK);
+            let window = carry + (window_bits & window_mask);
             if window & 1 == 0 {
                 // Digits are odd by construction; skip an even position.
                 pos += 1;
                 continue;
             }
 
-            if window < RADIX / 2 {
+            if window < radix / 2 {
                 carry = 0;
                 naf[pos] = window as i8;
             } else {
                 // Emit a negative digit and carry one into the next window.
+                // Computed in i16: at width 8 the radix itself does not fit
+                // an i8, though every emitted digit does.
                 carry = 1;
-                naf[pos] = (window as i8).wrapping_sub(RADIX as i8);
+                naf[pos] = (window as i16 - radix as i16) as i8;
             }
-            pos += WIDTH as usize;
+            pos += width as usize;
         }
         naf
     }
@@ -373,5 +375,30 @@ mod tests {
         }
         assert_eq!(acc, 0x7fff);
         assert!(digits.iter().all(|d| (-8..=8).contains(d)));
+    }
+
+    #[test]
+    fn non_adjacent_form_recomposes_at_every_width() {
+        // A value small enough to recompose exactly in an i128.
+        let mut bytes = [0_u8; 32];
+        bytes[..8].copy_from_slice(&0x0123_4567_89ab_cdef_u64.to_le_bytes());
+        bytes[8..12].copy_from_slice(&0x0eadbeef_u32.to_le_bytes());
+        let s = Scalar::from_bytes_mod_order(&bytes);
+        let expected = i128::from(0x0eadbeef_u32) << 64 | i128::from(0x0123_4567_89ab_cdef_u64);
+
+        for width in [4_u32, 5, 6, 7, 8] {
+            let naf = s.non_adjacent_form(width);
+            let mut acc = 0_i128;
+            for (i, digit) in naf.iter().enumerate().take(100) {
+                acc += i128::from(*digit) << i;
+            }
+            assert_eq!(acc, expected, "width {width}");
+            let bound = 1_i16 << (width - 1);
+            assert!(
+                naf.iter()
+                    .all(|d| i16::from(*d).abs() < bound && (d % 2 != 0 || *d == 0)),
+                "width {width} digit out of range"
+            );
+        }
     }
 }

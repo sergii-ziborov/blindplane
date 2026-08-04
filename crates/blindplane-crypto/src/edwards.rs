@@ -118,44 +118,36 @@ impl EdwardsPoint {
         }
     }
 
-    /// Add a cached point in projective-Niels form. Eight multiplications.
-    fn add_projective_niels(&self, rhs: &ProjectiveNiels) -> Self {
+    /// Add a cached point in projective-Niels form: four multiplications to a
+    /// completed point, whose caller pays only for the coordinates it needs.
+    fn add_projective_niels(&self, rhs: &ProjectiveNiels) -> CompletedPoint {
         let pp = self.y.add(&self.x).mul(&rhs.y_plus_x);
         let mm = self.y.sub(&self.x).mul(&rhs.y_minus_x);
         let tt2d = self.t.mul(&rhs.t2d);
         let zz = self.z.mul(&rhs.z);
         let zz2 = zz.add(&zz);
 
-        // Completed coordinates, then back to extended.
-        let cx = pp.sub(&mm);
-        let cy = pp.add(&mm);
-        let cz = zz2.add(&tt2d);
-        let ct = zz2.sub(&tt2d);
-        Self {
-            x: cx.mul(&ct),
-            y: cy.mul(&cz),
-            z: cz.mul(&ct),
-            t: cx.mul(&cy),
+        CompletedPoint {
+            e: pp.sub(&mm),
+            h: pp.add(&mm),
+            g: zz2.add(&tt2d),
+            f: zz2.sub(&tt2d),
         }
     }
 
-    /// Add a cached point in affine-Niels form (its `Z` is one). Seven
-    /// multiplications, used for the constant basepoint table.
-    fn add_affine_niels(&self, rhs: &AffineNiels) -> Self {
+    /// Add a cached point in affine-Niels form (its `Z` is one): three
+    /// multiplications to a completed point, for the constant basepoint table.
+    fn add_affine_niels(&self, rhs: &AffineNiels) -> CompletedPoint {
         let pp = self.y.add(&self.x).mul(&rhs.y_plus_x);
         let mm = self.y.sub(&self.x).mul(&rhs.y_minus_x);
         let txy2d = self.t.mul(&rhs.xy2d);
         let z2 = self.z.add(&self.z);
 
-        let cx = pp.sub(&mm);
-        let cy = pp.add(&mm);
-        let cz = z2.add(&txy2d);
-        let ct = z2.sub(&txy2d);
-        Self {
-            x: cx.mul(&ct),
-            y: cy.mul(&cz),
-            z: cz.mul(&ct),
-            t: cx.mul(&cy),
+        CompletedPoint {
+            e: pp.sub(&mm),
+            h: pp.add(&mm),
+            g: z2.add(&txy2d),
+            f: z2.sub(&txy2d),
         }
     }
 
@@ -293,10 +285,15 @@ impl EdwardsPoint {
     /// Both inputs are public: `A` comes from the signature's public key and
     /// `b` from the signature itself, so a data-dependent execution path here
     /// reveals nothing secret.
+    ///
+    /// The accumulator lives in projective coordinates and every stretch of
+    /// pure doublings runs T-free at four squarings each; the extended `T`
+    /// coordinate is materialised only at the positions where a non-zero NAF
+    /// digit makes an addition happen.
     pub fn vartime_double_scalar_mul_basepoint(a: &Scalar, big_a: &Self, b: &Scalar) -> Self {
-        // Odd multiples 1A, 3A, .., 15A, cached once in projective-Niels form so
-        // each reuse inside the loop is an 8-multiply mixed addition rather than
-        // a 9-multiply generic one that recomputes the same subterms.
+        // Odd multiples 1A, 3A, .., 15A, cached once in projective-Niels form
+        // so each reuse inside the loop is a mixed addition rather than a
+        // generic one that recomputes the same subterms.
         let double_a = big_a.double();
         let mut multiple = *big_a;
         let mut odd_a = [ProjectiveNiels::IDENTITY; 8];
@@ -308,34 +305,109 @@ impl EdwardsPoint {
 
         // The basepoint's odd multiples are constant; they are built once, in
         // affine-Niels form (Z = 1), and shared across every verification.
+        // Width 8 against the by-key table's width 5: a wider window pays a
+        // bigger table, which for the fixed basepoint costs nothing per call.
         let odd_b = basepoint_affine_odd_multiples();
 
-        let a_naf = a.non_adjacent_form();
-        let b_naf = b.non_adjacent_form();
+        let a_naf = a.non_adjacent_form(5);
+        let b_naf = b.non_adjacent_form(8);
         let mut i = 255;
         while i > 0 && a_naf[i] == 0 && b_naf[i] == 0 {
             i -= 1;
         }
 
-        let mut acc = Self::IDENTITY;
+        let mut acc = ProjectivePoint::IDENTITY;
         loop {
-            acc = acc.double();
-            if a_naf[i] > 0 {
-                acc = acc.add_projective_niels(&odd_a[(a_naf[i] as usize) / 2]);
-            } else if a_naf[i] < 0 {
-                acc = acc.add_projective_niels(&odd_a[((-a_naf[i]) as usize) / 2].negate());
-            }
-            if b_naf[i] > 0 {
-                acc = acc.add_affine_niels(&odd_b[(b_naf[i] as usize) / 2]);
-            } else if b_naf[i] < 0 {
-                acc = acc.add_affine_niels(&odd_b[((-b_naf[i]) as usize) / 2].negate());
+            let mut completed = acc.double();
+            if a_naf[i] != 0 || b_naf[i] != 0 {
+                let mut extended = completed.to_extended();
+                if a_naf[i] > 0 {
+                    completed = extended.add_projective_niels(&odd_a[(a_naf[i] as usize) / 2]);
+                } else if a_naf[i] < 0 {
+                    completed =
+                        extended.add_projective_niels(&odd_a[((-a_naf[i]) as usize) / 2].negate());
+                }
+                if b_naf[i] != 0 {
+                    if a_naf[i] != 0 {
+                        extended = completed.to_extended();
+                    }
+                    if b_naf[i] > 0 {
+                        completed = extended.add_affine_niels(&odd_b[(b_naf[i] as usize) / 2]);
+                    } else {
+                        completed =
+                            extended.add_affine_niels(&odd_b[((-b_naf[i]) as usize) / 2].negate());
+                    }
+                }
             }
             if i == 0 {
-                break;
+                break completed.to_extended();
             }
+            acc = completed.to_projective();
             i -= 1;
         }
-        acc
+    }
+}
+
+/// A point in projective coordinates `(X:Y:Z)`, the shape the doubling-heavy
+/// stretches of the vartime loop run in: a doubling here needs no `T` and no
+/// multiplies at all, only four squarings.
+#[derive(Clone, Copy)]
+struct ProjectivePoint {
+    x: Fe,
+    y: Fe,
+    z: Fe,
+}
+
+impl ProjectivePoint {
+    const IDENTITY: Self = Self {
+        x: Fe::ZERO,
+        y: Fe::ONE,
+        z: Fe::ONE,
+    };
+
+    /// `dbl-2008-hwcd` up to the completed coordinates, `T` never formed.
+    fn double(&self) -> CompletedPoint {
+        let a = self.x.square();
+        let b = self.y.square();
+        let c = self.z.square();
+        let c = c.add(&c);
+        let h = a.add(&b);
+        let e = h.sub(&self.x.add(&self.y).square());
+        let g = a.sub(&b);
+        let f = c.add(&g);
+        CompletedPoint { e, h, f, g }
+    }
+}
+
+/// An addition or doubling result before multiplying back into a concrete
+/// representation: `x = E/G`, `y = H/F`. Which conversion the caller picks
+/// decides whether the extended `T` is ever computed.
+#[derive(Clone, Copy)]
+struct CompletedPoint {
+    e: Fe,
+    h: Fe,
+    f: Fe,
+    g: Fe,
+}
+
+impl CompletedPoint {
+    /// Three multiplies; enough when the next operation is a doubling.
+    fn to_projective(&self) -> ProjectivePoint {
+        ProjectivePoint {
+            x: self.e.mul(&self.f),
+            y: self.g.mul(&self.h),
+            z: self.f.mul(&self.g),
+        }
+    }
+
+    /// Four multiplies; needed when the next operation is an addition.
+    fn to_extended(&self) -> EdwardsPoint {
+        EdwardsPoint {
+            x: self.e.mul(&self.f),
+            y: self.g.mul(&self.h),
+            z: self.f.mul(&self.g),
+            t: self.e.mul(&self.h),
+        }
     }
 }
 
@@ -441,15 +513,15 @@ fn basepoint_table() -> &'static [[EdwardsPoint; 8]; 64] {
     })
 }
 
-/// Odd multiples `1B, 3B, .., 15B` in affine-Niels form for variable-time
+/// Odd multiples `1B, 3B, .., 127B` in affine-Niels form for variable-time
 /// verification. The basepoint is constant, so this table is built once and its
-/// entries have `Z = 1`, which is what makes the loop's basepoint additions cost
-/// seven multiplications instead of nine.
-fn basepoint_affine_odd_multiples() -> &'static [AffineNiels; 8] {
+/// entries have `Z = 1`, which is what makes the loop's basepoint additions the
+/// cheapest addition there is.
+fn basepoint_affine_odd_multiples() -> &'static [AffineNiels; 64] {
     #[cfg(feature = "std")]
     {
         use std::sync::OnceLock;
-        static ODD: OnceLock<[AffineNiels; 8]> = OnceLock::new();
+        static ODD: OnceLock<[AffineNiels; 64]> = OnceLock::new();
         ODD.get_or_init(build_basepoint_affine_odd_multiples)
     }
     #[cfg(not(feature = "std"))]
@@ -461,19 +533,32 @@ fn basepoint_affine_odd_multiples() -> &'static [AffineNiels; 8] {
     }
 }
 
-fn build_basepoint_affine_odd_multiples() -> [AffineNiels; 8] {
-    let mut odd = [EdwardsPoint::IDENTITY; 8];
+fn build_basepoint_affine_odd_multiples() -> [AffineNiels; 64] {
+    let mut odd = [EdwardsPoint::IDENTITY; 64];
     odd[0] = BASEPOINT;
     let double_b = BASEPOINT.double();
-    for i in 1..8 {
+    for i in 1..64 {
         odd[i] = odd[i - 1].add(&double_b);
     }
-    // Normalize each to Z = 1 (one shared batchable inversion would be nicer,
-    // but this runs once per process) and cache the Niels subterms.
+
+    // Normalize all 64 points to Z = 1 with one shared inversion
+    // (Montgomery's trick): prefix products forward, unwind backward.
+    let mut prefix = [Fe::ONE; 64];
+    let mut running = Fe::ONE;
+    for (slot, point) in prefix.iter_mut().zip(odd.iter()) {
+        *slot = running;
+        running = running.mul(&point.z);
+    }
+    let mut suffix_inverse = running.invert();
+    let mut z_inverse = [Fe::ONE; 64];
+    for i in (0..64).rev() {
+        z_inverse[i] = suffix_inverse.mul(&prefix[i]);
+        suffix_inverse = suffix_inverse.mul(&odd[i].z);
+    }
+
     core::array::from_fn(|i| {
-        let z_inv = odd[i].z.invert();
-        let x = odd[i].x.mul(&z_inv);
-        let y = odd[i].y.mul(&z_inv);
+        let x = odd[i].x.mul(&z_inverse[i]);
+        let y = odd[i].y.mul(&z_inverse[i]);
         AffineNiels {
             y_plus_x: y.add(&x),
             y_minus_x: y.sub(&x),
