@@ -16,6 +16,39 @@ runtime dependencies**, and ships an adapter for
 > security audit. Read [Security posture](#security-posture) before trusting it
 > with anything real.
 
+## What you get
+
+- **A record format, not a cipher menu.** `seal` takes a payload, a routing
+  context and a recipient list and returns one signed, self-describing record:
+  payload AEAD under a fresh per-record secret, an HPKE envelope per recipient,
+  a key commitment, an Ed25519 signature over a canonical binary encoding. You
+  do not choose a mode, a nonce, or a KDF — those decisions are made once, in
+  one place, and tested.
+- **A server that cannot read.** The relay validates structure, signatures,
+  route-to-context agreement and monotonic versions, and answers blind-index
+  lookups, holding no key type at any point. `cargo tree` is the proof, and CI
+  runs it.
+- **Encrypted search that admits what it leaks.** Blind index tokens give
+  equality lookups scoped to `(tenant, label, key_epoch)`; the server learns
+  equality and frequency and nothing else, which is stated up front rather
+  than glossed.
+- **Rollback detection.** A client persists a signed manifest-hash chain head,
+  so a server replaying an older-but-genuinely-signed record is caught.
+- **Access changes without re-encryption.** `grant_recipient` adds an envelope;
+  `rekey` rotates the object secret forward. Neither touches the payload
+  ciphertext for existing readers.
+- **Competitive speed, measured against the best available.** X25519 1.19x
+  `x25519-dalek`, Ed25519 verification 1.09x `ed25519-dalek` with a pinned
+  author, HPKE and Argon2id at parity, AEAD within 6–12% of `ring`'s
+  hand-written assembly — with the numbers published as ratios and the losing
+  rows named. See [Benchmarks](#benchmarks).
+- **Two framework adapters, neither privileged**, and about sixty lines each:
+  Blazingly and axum. See [Serving it](#serving-it).
+- **Auditability as a constraint, not an aspiration.** Zero runtime
+  dependencies, no file over 300 lines, `unsafe` confined to accelerated paths
+  that compile out with one flag, and differential tests against independent
+  from-scratch reference implementations.
+
 ## The shape of it
 
 ```
@@ -109,7 +142,8 @@ for record in incoming {
 }
 ```
 
-Serving it through Blazingly is four lines:
+Serving it is four lines, whichever framework you use — see
+[Serving it](#serving-it):
 
 ```rust
 use blazingly::prelude::*;
@@ -144,6 +178,54 @@ flipped bit fails authentication:
 ```bash
 cargo run --release -p blindplane-blazingly --example overhead
 ```
+
+## Serving it
+
+The relay does no I/O and holds no key type, so an adapter is the routes plus
+an error mapping. There are two, and neither is privileged — the second exists
+so that "framework-neutral" is something you can run rather than something you
+have to believe.
+
+| | Blazingly | axum |
+|---|---|---|
+| Adapter size | ~85 lines of routes | ~60 lines of routes |
+| Record on the wire | base64 inside typed models | canonical bytes as a raw body |
+| Buys | OpenAPI and MCP projection, validation attributes | no encoding layer at all |
+| State | `RelayState(Rc<Relay>)` | `Arc<Relay>` — `Relay` is already `Send + Sync` |
+| Try it | `--example sealed_api` | `--example axum_relay` |
+
+The wire shape differs on purpose: it is the adapter's decision, not the
+library's. Blazingly carries records as base64 so the whole surface stays
+inside its OpenAPI and MCP projection; axum takes the bytes directly, which
+skips the encoding work that [`overhead`](#quick-start) measures at more than
+half of a sealed round trip.
+
+```bash
+cargo run -p blindplane-relay --example axum_relay
+```
+
+## In the browser
+
+`blindplane-crypto` is `no_std` and dependency-free, which makes the client
+side a compilation target rather than a rewrite:
+
+```bash
+cargo build --target wasm32-unknown-unknown -p blindplane-crypto --no-default-features
+```
+
+That builds today, unchanged. A release cdylib exercising the whole client
+surface — AEAD, X25519, Ed25519 sign and verify, SHA-256 — measures **179 KB
+raw, 57 KB gzipped**.
+
+Two things a browser binding must handle, and both are known rather than
+lurking. Entropy: there is no `/dev/urandom`, so `rand::fill` returns
+`RandomError` — it **fails closed** rather than producing predictable keys, and
+a binding to `crypto.getRandomValues` is the fix. Argon2id at 64 MiB will
+block whatever thread it runs on, so vault derivation belongs in a Web Worker.
+
+Reimplementing this protocol in JavaScript would be the wrong shape: constant
+time is not achievable there, and two implementations of a canonical encoding
+drift. Compiling this one keeps both properties by construction.
 
 ## Security posture
 
