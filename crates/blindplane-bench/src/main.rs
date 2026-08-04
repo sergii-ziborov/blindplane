@@ -4,8 +4,8 @@
 //! Methodology, so the numbers mean something:
 //!
 //! - each measurement runs for at least 250 ms, and the reported figure is the
-//!   best of five such rounds, which suppresses scheduler noise without
-//!   flattering any single implementation;
+//!   median of five such rounds — the median, unlike a best-of, cannot be
+//!   inflated by one lucky scheduling window;
 //! - every implementation processes identical inputs and its output is checked,
 //!   so a fast wrong answer cannot win;
 //! - throughput counts plaintext bytes, not ciphertext, so the tag does not
@@ -59,7 +59,7 @@ fn main() {
     let _ = writeln!(report, "| Acceleration | `{acceleration}` |");
     let _ = writeln!(
         report,
-        "| Method | best of {ROUNDS} rounds, each at least {} ms |\n",
+        "| Method | median of {ROUNDS} rounds, each at least {} ms |\n",
         MIN_ROUND.as_millis()
     );
 
@@ -80,15 +80,16 @@ fn main() {
     }
 }
 
-/// Time `body` for at least `MIN_ROUND`, returning operations per second.
+/// Time `body` for at least `MIN_ROUND`, returning the median rate in
+/// operations per second across `ROUNDS` rounds.
 fn measure(mut body: impl FnMut()) -> f64 {
     // Warm up caches, branch predictors and any lazily built table.
     for _ in 0..8 {
         body();
     }
 
-    let mut best = 0.0_f64;
-    for _ in 0..ROUNDS {
+    let mut rates = [0.0_f64; ROUNDS];
+    for rate in &mut rates {
         let mut iterations = 0_u64;
         let start = Instant::now();
         loop {
@@ -98,10 +99,10 @@ fn measure(mut body: impl FnMut()) -> f64 {
                 break;
             }
         }
-        let rate = iterations as f64 / start.elapsed().as_secs_f64();
-        best = best.max(rate);
+        *rate = iterations as f64 / start.elapsed().as_secs_f64();
     }
-    best
+    rates.sort_unstable_by(f64::total_cmp);
+    rates[ROUNDS / 2]
 }
 
 fn throughput(bytes: usize, ops_per_second: f64) -> f64 {

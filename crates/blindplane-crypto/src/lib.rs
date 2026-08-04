@@ -21,7 +21,7 @@
 //! | SHA-256, SHA-512 | FIPS 180-4 | SHA-256 uses ARMv8 SHA-2 instructions when present |
 //! | HMAC, HKDF | RFC 2104, RFC 5869 | over SHA-256 and SHA-512 |
 //! | ChaCha20, HChaCha20 | RFC 8439, XChaCha draft | four blocks per pass in 32-bit lanes |
-//! | Poly1305 | RFC 8439 | 44-bit limbs, 64x64 products |
+//! | Poly1305 | RFC 8439 | base-2^64 limbs, four wide products per block |
 //! | ChaCha20-Poly1305, XChaCha20-Poly1305 | RFC 8439 | constant time on every target |
 //! | AES-256-GCM | NIST SP 800-38D | CPU instructions only, by design |
 //! | X25519 | RFC 7748 | Montgomery ladder, 51-bit limbs |

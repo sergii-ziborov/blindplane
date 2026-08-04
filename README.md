@@ -145,8 +145,8 @@ cargo run -p blindplane-cli -- selfcheck
   `--no-default-features --features std`.
 - Password-derived vault keys use Argon2id and are therefore subject to offline
   dictionary attack by whoever holds the vault blob. This is **not** OPAQUE or
-  any other PAKE; a PAKE would remove that exposure and is the main item on the
-  roadmap.
+  any other PAKE; a PAKE would remove that exposure and is on the
+  [roadmap](#roadmap).
 - Revocation is forward-looking. `rekey` rotates the object secret so future
   reads are denied; it cannot un-read what a former recipient already saw.
 - Recipient key pinning is only as good as the channel the fingerprint arrived
@@ -185,41 +185,50 @@ cargo test --workspace
 Full results, methodology and machine details: [`results/benchmarks.md`](results/benchmarks.md).
 Reproduce with `cargo run --release -p blindplane-bench`.
 
-Measured on an Apple M4 (4 performance + 6 efficiency cores), rustc 1.96.1,
-best of five rounds of at least 250 ms each, identical inputs for every
-implementation, outputs checked. **Report ratios, not absolutes.** These
-figures were captured on a shared developer machine, so the absolute GB/s runs
-low and varies between passes; every comparison below ran back-to-back under
-identical load, so the standings are stable even when the absolutes are not.
+Measured on an Apple M4 (4 performance + 6 efficiency cores), rustc 1.96.1.
+Each figure is the median of five rounds of at least 250 ms, identical inputs
+for every implementation, outputs checked; the run below is the middle of
+three full passes, which agreed within 3% on every single-core row.
+**Report ratios, not absolutes.** This is a developer machine with background
+load, so absolutes drift between sessions; every comparison ran back-to-back
+in one process, so the standings hold even when the absolutes move.
 
-**AEAD encryption, GB/s at 1 MiB — median of three passes**
+**AEAD encryption, GB/s — higher is better**
 
-| Implementation | GB/s | vs `ring` |
-|---|---:|---:|
-| ring AES-256-GCM | 7.08 | 1.00x |
-| **Blindplane AES-256-GCM** | **6.64** | **0.94x** |
-| RustCrypto aes-gcm | 5.96 | 0.84x |
-| ring ChaCha20-Poly1305 | 1.99 | 1.00x |
-| **Blindplane ChaCha20-Poly1305** | **1.43** | **0.72x** |
-| RustCrypto chacha20poly1305 | 0.99 | 0.50x |
+| Implementation | 1 KiB | 64 KiB | 1 MiB |
+|---|---:|---:|---:|
+| ring AES-256-GCM | 5.20 | 7.74 | 7.36 |
+| **Blindplane AES-256-GCM** | 3.20 | **7.23** | **7.37** |
+| RustCrypto aes-gcm | 5.95 | 6.47 | 6.46 |
+| ring ChaCha20-Poly1305 | 1.61 | 2.15 | 2.17 |
+| **Blindplane ChaCha20-Poly1305** | **1.41** | **1.92** | **1.93** |
+| RustCrypto chacha20poly1305 | 0.92 | 1.09 | 1.09 |
+
+ChaCha20-Poly1305 stood at 0.72x of `ring` before the fused seal pass and the
+base-2^64 Poly1305; it is now 0.89–0.90x at every size. AES-256-GCM is 0.93x
+at 64 KiB and parity at 1 MiB. The honest weak row is short-message AES-GCM:
+at 1 KiB we run 0.62x of `ring`, because every seal pays the full key schedule
+and GHASH table setup. RustCrypto's aes-gcm leads everyone at 1 KiB for the
+same reason in reverse — its cipher object amortises setup across calls, a
+shape our fresh-key-per-record API deliberately does not have.
 
 **Hashing, GB/s at 64 KiB**
 
 | Implementation | SHA-256 | SHA-512 |
 |---|---:|---:|
-| ring | 2.91 | 1.63 |
-| RustCrypto | 2.51 | 1.67 |
-| **Blindplane** | **2.44** | **1.55** |
+| ring | 3.39 | 1.90 |
+| RustCrypto | 2.90 | 1.95 |
+| **Blindplane** | 2.82 | 1.67 |
 
 **Public-key and protocol operations, ops/s — higher is better**
 
 | Operation | Blindplane | Reference | Ratio |
 |---|---:|---:|---:|
-| X25519 Diffie-Hellman | **54 351** | 45 561 (`x25519-dalek`) | **1.19x** |
-| Ed25519 sign | **116 653** | 110 371 (`ed25519-dalek`) | **1.06x** |
-| Ed25519 verify (strict) | 37 889 | 50 150 (`ed25519-dalek`) | 0.76x |
-| HPKE seal | **24 303** | 23 902 (`hpke`) | **1.02x** |
-| Argon2id, 64 MiB × 3 | 10.6 | 11.5 (`argon2`) | 0.92x |
+| X25519 Diffie-Hellman | **58 855** | 49 533 (`x25519-dalek`) | **1.19x** |
+| Ed25519 sign | **124 093** | 119 283 (`ed25519-dalek`) | **1.04x** |
+| Ed25519 verify (strict) | 41 015 | 54 560 (`ed25519-dalek`) | 0.75x |
+| HPKE seal | **26 598** | 26 056 (`hpke`) | **1.02x** |
+| Argon2id, 64 MiB × 3 | 12.9 | 15.0 (`argon2`) | 0.86x |
 
 **End-to-end sealed records** — a full record: fresh object secret, payload
 AEAD, one HPKE envelope per recipient, key commitment, Ed25519 signature and
@@ -227,15 +236,15 @@ canonical encoding.
 
 | Operation | records/s |
 |---|---:|
-| seal, 4 KiB, 1 recipient | 16 019 |
-| open, 4 KiB, 1 recipient | 16 557 |
-| seal, 4 KiB, 3 recipients | 6 727 |
-| seal batch, all 10 cores | 66 785 |
+| seal, 4 KiB, 1 recipient | 17 600 |
+| open, 4 KiB, 1 recipient | 19 372 |
+| seal, 4 KiB, 3 recipients | 7 445 |
+| seal batch, all 10 cores | 75 507 |
 
 Where we lead: X25519, Ed25519 signing, HPKE, and the whole-record path. Where
-we trail: bulk symmetric throughput against `ring`'s hand-written assembly, and
-Ed25519 verification. Both are named in the [roadmap](#roadmap) with the
-technique that would close them.
+we trail: Ed25519 verification (0.75x), hashing against `ring`'s assembly, and
+short-message AES-GCM. Each is named in the [roadmap](#roadmap) with the
+technique that would close it.
 
 ### What the acceleration pass changed
 
@@ -249,6 +258,17 @@ Every symmetric primitive was rewritten against the hardware it runs on:
 - **AES-256-GCM** widened to an eight-block pipeline with eight precomputed
   powers of `H` and eight independent GHASH multiplies, and fuses CTR with
   GHASH into a single pass. 1.46 → ~6 GB/s.
+- **Poly1305** moved from 44-bit limbs to the base-2^64 layout: four wide
+  multiplies per block instead of nine, with the final fold carried explicitly
+  so the accumulator bound holds by local inspection. A new test checks it
+  against a 320-bit school-arithmetic reference evaluated straight from the
+  RFC 8439 pseudocode.
+- **ChaCha20-Poly1305 sealing** became one interleaved pass: encrypt a
+  512-byte chunk on the vector pipes, MAC it on the scalar multiplier while
+  the next chunk encrypts. The out-of-order window overlaps the two, which is
+  what fused AEAD assembly arranges by hand. Together with the Poly1305
+  rewrite: 0.72x → 0.90x of `ring`. Opening keeps its two passes on purpose —
+  verify-then-decrypt is a documented property, not an implementation detail.
 - **SHA-512** moved onto the ARMv8.2 `SHA512H/H2/SU0/SU1` instructions, 2.6x
   over scalar, gated on a positive `FEAT_SHA512` check.
 - **Ed25519 verification** caches its table points in projective- and
@@ -312,20 +332,21 @@ published state of the art, and which techniques close the remaining gaps:
 
 ## Roadmap
 
-Ordered by measured value. The first three come straight from the literature
-review and are the path from "behind `ring`" to "ahead of it".
+Ordered by measured value. The former top two items — the fused
+ChaCha20-Poly1305 pass and Poly1305 in base 2^64 — landed and took that suite
+from 0.72x of `ring` to 0.90x; what remains of that path is below.
 
-1. **Fuse ChaCha20 and Poly1305 into one pass.** ChaCha in NEON, Poly1305 in
-   scalar registers on the previous block group — two different execution
-   resources, software-pipelined. This is precisely what `ring` beats us with;
-   we run two full passes over the buffer where it runs one.
-2. **Poly1305 in base 2^64**: nine multiply instructions per block instead of
-   eighteen. Self-contained, low effort, exactly quantified.
-3. **GHASH down to 26 carry-less multiplies per 128 bytes** (we are at 48):
+1. **GHASH down to 26 carry-less multiplies per 128 bytes** (we are at 48):
    precomputed folded Karatsuba keys, pre-twisted H powers to delete the
    per-block `RBIT`, and software-pipelining GHASH against the previous group.
    Also worth testing whether schoolbook beats Karatsuba on Apple cores, as the
    canonical ARMv8 GCM paper found.
+2. **Short-message AES-GCM.** At 1 KiB we run 0.62x of `ring`: every seal pays
+   the full key schedule and H-power table. Trim the setup or offer a
+   reusable-key entry point for callers that legitimately reuse one.
+3. **The last 10% of ChaCha20-Poly1305**: the chunked overlap still loses to
+   `ring`'s hand-scheduled fusion; instruction-level interleaving of the
+   Poly1305 chain into the cipher loop is the remaining technique.
 4. **`PSTATE.DIT`** around every secret-handling path. Near-zero cost, and it
    turns "constant time" from an assumption about undocumented microarchitecture
    into an architectural guarantee.
