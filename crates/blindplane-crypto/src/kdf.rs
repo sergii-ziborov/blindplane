@@ -178,12 +178,7 @@ pub fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8], okm: &mut [u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len() / 2)
-            .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
-            .collect()
-    }
+    use crate::testutil::unhex as hex;
 
     #[test]
     fn rfc4231_hmac_sha256_case_1() {

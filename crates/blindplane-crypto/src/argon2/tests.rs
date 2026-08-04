@@ -1,10 +1,7 @@
 //! Unit tests for BLAKE2b and Argon2id.
 
 use super::*;
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use crate::testutil::hex;
 
 #[test]
 fn blake2b_rfc7693_abc() {

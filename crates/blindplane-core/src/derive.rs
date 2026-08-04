@@ -2,11 +2,12 @@
 
 use std::collections::HashSet;
 
-use blindplane_crypto::aead::Suite;
+use blindplane_crypto::aead::{Suite, TAG_LEN};
 use blindplane_crypto::util::Secret;
 use blindplane_crypto::{HmacSha256, ct_eq_bytes, hkdf_expand, hkdf_extract, hpke};
 use blindplane_wire::{
     BlindIndex, RecipientEnvelope, RecordContext, SealedRecord, ValidationPolicy, WireError,
+    push_bytes,
 };
 
 use crate::error::CryptoError;
@@ -118,7 +119,7 @@ pub(crate) fn preflight(
     {
         return Err(CryptoError::InvalidRecordInput);
     }
-    if plaintext_len.saturating_add(16) > policy.max_ciphertext_bytes {
+    if plaintext_len.saturating_add(TAG_LEN) > policy.max_ciphertext_bytes {
         return Err(CryptoError::PayloadTooLarge);
     }
     if recipients.is_empty() {
@@ -172,12 +173,7 @@ fn hpke_aad(context: &RecordContext, recipient: &Recipient) -> Vec<u8> {
     aad
 }
 
-fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u64::try_from(bytes.len()).expect("usize fits into u64 on supported targets");
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
-}
-
+/// The [`push_bytes`] convention, written into a MAC instead of a buffer.
 pub(crate) fn mac_bytes(mac: &mut HmacSha256, bytes: &[u8]) {
     let len = u64::try_from(bytes.len()).expect("usize fits into u64 on supported targets");
     mac.update(&len.to_be_bytes());

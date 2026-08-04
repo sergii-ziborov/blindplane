@@ -100,6 +100,8 @@ pub mod scalar;
 pub mod sha2;
 #[cfg(feature = "std")]
 pub mod simple;
+#[cfg(test)]
+mod testutil;
 pub mod util;
 
 pub use aead::{AeadError, Suite};

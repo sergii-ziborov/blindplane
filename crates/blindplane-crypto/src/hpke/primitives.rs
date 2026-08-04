@@ -2,7 +2,7 @@
 
 use crate::aead::{AeadError, Suite};
 use crate::kdf::{hkdf_expand, hkdf_extract};
-use crate::montgomery::{StaticSecret, public_key, x25519};
+use crate::montgomery::{StaticSecret, x25519};
 use crate::util::{Secret, secure_erase};
 
 const VERSION_LABEL: &[u8] = b"HPKE-v1";
@@ -14,8 +14,6 @@ pub(super) const MODE_AUTH: u8 = 0x02;
 
 /// Length of a serialized X25519 public key or encapsulated key.
 pub const ENCAPSULATED_KEY_LEN: usize = 32;
-/// Length of the AEAD key this suite derives.
-pub const KEY_LEN: usize = 32;
 /// Length of the AEAD base nonce this suite derives.
 pub const NONCE_LEN: usize = 12;
 
@@ -167,11 +165,6 @@ pub fn derive_key_pair(ikm: &[u8]) -> StaticSecret {
     let key = StaticSecret::from_bytes(secret);
     secure_erase(&mut secret);
     key
-}
-
-/// Compute a public key without holding a [`StaticSecret`].
-pub fn public_key_from_secret(secret: &[u8; 32]) -> [u8; 32] {
-    public_key(secret)
 }
 
 /// Raw X25519 for callers that need the primitive directly.

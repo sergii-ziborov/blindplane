@@ -102,17 +102,6 @@ const fn is_zero_u64(value: u64) -> u64 {
     nonzero ^ 1
 }
 
-/// Constant-time selection between two byte arrays.
-#[inline]
-pub fn ct_select_bytes<const N: usize>(a: &[u8; N], b: &[u8; N], choice: Choice) -> [u8; N] {
-    let mask = choice.mask() as u8;
-    let mut out = [0_u8; N];
-    for i in 0..N {
-        out[i] = a[i] ^ (mask & (a[i] ^ b[i]));
-    }
-    out
-}
-
 /// Overwrite a buffer so a secret does not outlive its scope.
 ///
 /// The zeroing is followed by a compiler fence and an opaque read of the
@@ -230,11 +219,11 @@ mod tests {
     }
 
     #[test]
-    fn selection_is_value_correct() {
-        let a = [1_u8, 2, 3];
-        let b = [4_u8, 5, 6];
-        assert_eq!(ct_select_bytes(&a, &b, Choice::FALSE), a);
-        assert_eq!(ct_select_bytes(&a, &b, Choice::TRUE), b);
+    fn the_choice_constants_carry_the_masks_they_promise() {
+        assert_eq!(Choice::TRUE.mask(), u64::MAX);
+        assert_eq!(Choice::FALSE.mask(), 0);
+        assert!(Choice::TRUE.is_set());
+        assert!(!Choice::FALSE.is_set());
     }
 
     #[test]

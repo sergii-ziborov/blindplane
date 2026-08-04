@@ -118,13 +118,7 @@ impl core::fmt::Debug for StaticSecret {
 mod tests {
     use super::*;
 
-    fn hex32(s: &str) -> [u8; 32] {
-        let mut out = [0_u8; 32];
-        for (i, slot) in out.iter_mut().enumerate() {
-            *slot = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
-        }
-        out
-    }
+    use crate::testutil::unhex_array as hex32;
 
     #[test]
     fn rfc7748_vector_1() {

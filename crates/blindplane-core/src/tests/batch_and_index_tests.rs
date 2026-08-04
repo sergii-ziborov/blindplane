@@ -64,11 +64,7 @@ fn every_suite_round_trips_across_many_payload_sizes() {
     let author = Author::generate().unwrap();
     let alice = RecipientKeypair::generate("alice", 1).unwrap();
 
-    for suite in [
-        Suite::Aes256Gcm,
-        Suite::XChaCha20Poly1305,
-        Suite::ChaCha20Poly1305,
-    ] {
+    for suite in Suite::ALL {
         if !suite.is_available() {
             continue;
         }

@@ -60,7 +60,7 @@ impl Sha256 {
             data = &data[take..];
             if self.buffered == 64 {
                 let block = self.buffer;
-                compress256(&mut self.state, &block);
+                compress256_blocks(&mut self.state, &block);
                 self.buffered = 0;
             }
         }
@@ -119,10 +119,6 @@ fn compress256_blocks(state: &mut [u32; 8], data: &[u8]) {
         fixed.copy_from_slice(block);
         compress256_portable(state, &fixed);
     }
-}
-
-fn compress256(state: &mut [u32; 8], block: &[u8; 64]) {
-    compress256_blocks(state, block);
 }
 
 pub(super) fn compress256_portable(state: &mut [u32; 8], block: &[u8; 64]) {

@@ -1,12 +1,7 @@
 //! Unit tests for AES-256-GCM.
 
 use super::*;
-
-fn hex(s: &str) -> Vec<u8> {
-    (0..s.len() / 2)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
-        .collect()
-}
+use crate::testutil::unhex as hex;
 
 #[test]
 fn nist_gcm_test_case_13() {

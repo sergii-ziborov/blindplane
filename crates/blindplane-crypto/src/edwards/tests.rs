@@ -3,6 +3,7 @@
 use super::point::BASEPOINT;
 use super::*;
 use crate::scalar::Scalar;
+use crate::testutil::unhex_array;
 
 #[test]
 fn basepoint_has_prime_order() {
@@ -208,22 +209,9 @@ fn small_order_public_key_is_rejected() {
 }
 
 fn hex32(s: &str) -> [u8; 32] {
-    let mut out = [0_u8; 32];
-    decode_hex(s, &mut out);
-    out
+    unhex_array(s)
 }
 
 fn hex64(s: &str) -> [u8; 64] {
-    let mut out = [0_u8; 64];
-    decode_hex(s, &mut out);
-    out
-}
-
-fn decode_hex(s: &str, out: &mut [u8]) {
-    let bytes = s.as_bytes();
-    for (i, slot) in out.iter_mut().enumerate() {
-        let hi = (bytes[2 * i] as char).to_digit(16).unwrap() as u8;
-        let lo = (bytes[2 * i + 1] as char).to_digit(16).unwrap() as u8;
-        *slot = (hi << 4) | lo;
-    }
+    unhex_array(s)
 }

@@ -1,6 +1,6 @@
 //! The signed, multi-recipient sealed record and its validation.
 
-use blindplane_crypto::aead::Suite;
+use blindplane_crypto::aead::{Suite, TAG_LEN};
 use blindplane_crypto::{PreparedVerifier, Sha256, verify_strict};
 
 use crate::context::{BlindIndex, RecipientEnvelope, RecordContext, payload_aad};
@@ -191,7 +191,7 @@ impl SealedRecord {
                 actual: self.nonce.len(),
             });
         }
-        if self.ciphertext.len() < 16 || self.ciphertext.len() > policy.max_ciphertext_bytes {
+        if self.ciphertext.len() < TAG_LEN || self.ciphertext.len() > policy.max_ciphertext_bytes {
             return Err(WireError::CiphertextSize(self.ciphertext.len()));
         }
         if self.recipients.is_empty() || self.recipients.len() > policy.max_recipients {

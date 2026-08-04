@@ -1,12 +1,7 @@
 //! Unit tests for the AEAD suites.
 
 use super::*;
-
-fn hex(s: &str) -> Vec<u8> {
-    (0..s.len() / 2)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
-        .collect()
-}
+use crate::testutil::unhex as hex;
 
 #[test]
 fn rfc8439_aead_vector() {
@@ -54,11 +49,7 @@ fn xchacha20poly1305_round_trip() {
 
 #[test]
 fn every_available_suite_round_trips_at_many_lengths() {
-    for suite in [
-        Suite::Aes256Gcm,
-        Suite::XChaCha20Poly1305,
-        Suite::ChaCha20Poly1305,
-    ] {
+    for suite in Suite::ALL {
         if !suite.is_available() {
             continue;
         }
@@ -76,11 +67,7 @@ fn every_available_suite_round_trips_at_many_lengths() {
 
 #[test]
 fn tampering_is_rejected_by_every_suite() {
-    for suite in [
-        Suite::Aes256Gcm,
-        Suite::XChaCha20Poly1305,
-        Suite::ChaCha20Poly1305,
-    ] {
+    for suite in Suite::ALL {
         if !suite.is_available() {
             continue;
         }

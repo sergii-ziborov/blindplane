@@ -1,6 +1,6 @@
 [package]
 name = "blindplane-crypto"
-description = "Dependency-free cryptographic core for Blindplane: ChaCha20-Poly1305, AES-256-GCM, SHA-2, HKDF, Argon2id, X25519, Ed25519 and HPKE, with Apple Silicon and x86-64 acceleration"
+description = "Dependency-free cryptographic core for Blindplane: ChaCha20-Poly1305, AES-256-GCM, SHA-2, HKDF, Argon2id, X25519, Ed25519 and HPKE, accelerated on AArch64"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,7 +15,7 @@ categories = ["cryptography", "no-std::no-alloc"]
 default = ["std", "accel"]
 # Operating-system entropy and heap-backed helpers.
 std = []
-# CPU cryptographic extensions (ARMv8 AES/PMULL/SHA-2, x86-64 AES-NI/PCLMULQDQ).
+# CPU cryptographic extensions (ARMv8 AES/PMULL/SHA-2; x86-64 is on the roadmap).
 # Disabling this leaves the portable implementations, which produce identical
 # output, and removes every `unsafe` block from the compiled crate.
 # Needs `std`: the hardware paths are selected by runtime CPU detection.

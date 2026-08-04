@@ -53,6 +53,16 @@ pub enum Suite {
 }
 
 impl Suite {
+    /// Every suite this crate defines.
+    ///
+    /// Callers that exercise "all suites" iterate this rather than a literal,
+    /// so a suite added to the enum cannot silently skip anyone's coverage.
+    pub const ALL: [Self; 3] = [
+        Self::Aes256Gcm,
+        Self::XChaCha20Poly1305,
+        Self::ChaCha20Poly1305,
+    ];
+
     /// Nonce length in bytes.
     pub const fn nonce_len(self) -> usize {
         match self {

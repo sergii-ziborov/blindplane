@@ -3,7 +3,7 @@
 use blindplane_crypto::HmacSha256;
 use blindplane_crypto::rand;
 use blindplane_crypto::util::Secret;
-use blindplane_wire::BlindIndex;
+use blindplane_wire::{BlindIndex, ValidationPolicy};
 
 use crate::derive::{INDEX_DOMAIN, mac_bytes};
 use crate::error::CryptoError;
@@ -32,7 +32,8 @@ impl ExactIndexDefinition {
         key_epoch: u64,
     ) -> Result<Self, CryptoError> {
         let label = label.into();
-        if label.is_empty() || label.len() > 255 || schema_version == 0 || key_epoch == 0 {
+        let max = ValidationPolicy::default().max_identifier_bytes;
+        if label.is_empty() || label.len() > max || schema_version == 0 || key_epoch == 0 {
             return Err(CryptoError::InvalidIndexScope);
         }
         Ok(Self {
@@ -81,7 +82,7 @@ impl SearchKey {
         definition: &ExactIndexDefinition,
         value: &[u8],
     ) -> Result<BlindIndex, CryptoError> {
-        if tenant.is_empty() || tenant.len() > 255 {
+        if tenant.is_empty() || tenant.len() > ValidationPolicy::default().max_identifier_bytes {
             return Err(CryptoError::InvalidIndexScope);
         }
         let mut mac = HmacSha256::new(self.0.as_bytes());

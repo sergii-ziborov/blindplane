@@ -3,10 +3,7 @@
 use super::sha256::{H256, compress256_portable};
 use super::sha512::{H512, compress512, compress512_blocks};
 use super::*;
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use crate::testutil::hex;
 
 #[test]
 fn sha256_known_answers() {

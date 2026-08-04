@@ -137,12 +137,20 @@ fn decode_context(bytes: &[u8], policy: &ValidationPolicy) -> Result<RecordConte
     Ok(context)
 }
 
-pub(crate) fn push_len(out: &mut Vec<u8>, len: usize) {
+/// Append a length as eight big-endian bytes.
+///
+/// The canonical encoding is length-prefixed everywhere so that no two
+/// different field sequences can produce the same bytes — the property that
+/// makes a signature over these bytes unambiguous. Anything that builds
+/// domain-separated input destined to be signed or MACed alongside a record
+/// must use this same convention, so it is public rather than private.
+pub fn push_len(out: &mut Vec<u8>, len: usize) {
     let len = u64::try_from(len).expect("usize always fits into u64 on supported targets");
     out.extend_from_slice(&len.to_be_bytes());
 }
 
-pub(crate) fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+/// Append a length-prefixed byte string, per [`push_len`].
+pub fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     push_len(out, bytes.len());
     out.extend_from_slice(bytes);
 }

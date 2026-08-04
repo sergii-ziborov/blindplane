@@ -24,11 +24,6 @@ impl Relay {
         &self.policy
     }
 
-    /// The underlying store.
-    pub const fn store(&self) -> &MemoryStore {
-        &self.store
-    }
-
     /// Accept an encoded record for a route, checking that the route and the
     /// record's authenticated context agree.
     ///

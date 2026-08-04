@@ -13,8 +13,5 @@ mod seal;
 mod tests;
 
 pub use open::{auth_open, open};
-pub use primitives::{
-    ENCAPSULATED_KEY_LEN, HpkeError, KEY_LEN, NONCE_LEN, derive_key_pair, diffie_hellman,
-    public_key_from_secret,
-};
+pub use primitives::{ENCAPSULATED_KEY_LEN, HpkeError, NONCE_LEN, derive_key_pair, diffie_hellman};
 pub use seal::{auth_seal, seal};

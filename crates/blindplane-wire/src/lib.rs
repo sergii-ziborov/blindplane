@@ -23,6 +23,7 @@ mod record;
 mod tests;
 
 pub use context::{BlindIndex, RecipientEnvelope, RecordContext, payload_aad};
+pub use encode::{push_bytes, push_len};
 pub use error::WireError;
 pub use head::FreshnessHead;
 pub use policy::ValidationPolicy;
