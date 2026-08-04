@@ -10,5 +10,19 @@ repository.workspace = true
 [dependencies]
 blindplane-wire = { path = "../blindplane-wire", version = "0.1.0" }
 
+[dev-dependencies]
+# The axum example exists to keep "framework-neutral" honest: this crate is
+# also served by Blazingly, and neither adapter is privileged. Nothing here
+# is a runtime dependency — CI checks that mechanically with
+# `cargo tree --edges normal`.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+blindplane-core = { path = "../blindplane-core", version = "0.1.0" }
+tokio = { version = "1", features = ["rt", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+
+[[example]]
+name = "axum_relay"
+required-features = []
+
 [lints]
 workspace = true
