@@ -601,9 +601,6 @@ pub fn verify_strict(
     // A canonical S is what stops an attacker from producing a second valid
     // signature for a message that was already signed.
     let s = Scalar::from_canonical_bytes(&s_bytes).ok_or(SignatureError::NonCanonicalSignatureS)?;
-    if EdwardsPoint::decompress(&r_bytes).is_none() {
-        return Err(SignatureError::InvalidSignatureR);
-    }
 
     let mut hasher = Sha512::new();
     hasher.update(&r_bytes);
@@ -611,10 +608,16 @@ pub fn verify_strict(
     hasher.update(message);
     let k = Scalar::from_wide_bytes(&hasher.finalize());
 
-    // R = [s]B - [k]A, compared in compressed form.
+    // R = [s]B - [k]A, compared in compressed form. The comparison subsumes
+    // decompressing R: the recomputed side always compresses to a canonical
+    // encoding of a curve point, so bytes that are not one can never match.
+    // R is decompressed only on the failure path, to classify the error the
+    // same way as before.
     let recomputed = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &big_a.negate(), &s);
     if ct_eq_bytes(&recomputed.compress(), &r_bytes).is_set() {
         Ok(())
+    } else if EdwardsPoint::decompress(&r_bytes).is_none() {
+        Err(SignatureError::InvalidSignatureR)
     } else {
         Err(SignatureError::VerificationFailed)
     }
