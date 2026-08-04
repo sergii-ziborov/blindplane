@@ -29,7 +29,9 @@ use blindplane_crypto::aead::Suite;
 use blindplane_crypto::argon2::{Argon2Params, argon2id};
 use blindplane_crypto::hpke as bp_hpke;
 use blindplane_crypto::montgomery::StaticSecret;
-use blindplane_crypto::{Acceleration, Sha256, Sha512, SigningKey, verify_strict};
+use blindplane_crypto::{
+    Acceleration, PreparedVerifier, Sha256, Sha512, SigningKey, verify_strict,
+};
 use blindplane_wire::RecordContext;
 
 const MIN_ROUND: Duration = Duration::from_millis(250);
@@ -420,6 +422,14 @@ fn bench_asymmetric(report: &mut String) {
         })
     };
 
+    // One author verified many times, the product's actual shape. This is
+    // also the closer comparison: dalek's VerifyingKey above is itself a
+    // pre-parsed point, while our plain row re-parses the key every call.
+    let prepared = PreparedVerifier::new(&public_key).expect("valid key");
+    let our_prepared = measure(|| {
+        black_box(prepared.verify_strict(&message, &signature).is_ok());
+    });
+
     for (name, ours, theirs, competitor) in [
         (
             "X25519 Diffie-Hellman",
@@ -431,6 +441,12 @@ fn bench_asymmetric(report: &mut String) {
         (
             "Ed25519 verify (strict)",
             our_verify,
+            dalek_verify,
+            "ed25519-dalek",
+        ),
+        (
+            "Ed25519 verify (prepared author)",
+            our_prepared,
             dalek_verify,
             "ed25519-dalek",
         ),

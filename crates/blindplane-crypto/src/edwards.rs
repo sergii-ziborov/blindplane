@@ -351,6 +351,60 @@ impl EdwardsPoint {
             i -= 1;
         }
     }
+
+    /// Variable-time `[a]A + [b]B` where the odd multiples of `A` arrive
+    /// already prepared in affine-Niels form, as [`PreparedVerifier`] holds
+    /// them. With both tables affine and width 8, every addition in the loop
+    /// is the cheapest kind and the per-call table build disappears.
+    fn vartime_double_scalar_mul_prepared(
+        a: &Scalar,
+        odd_a: &[AffineNiels; 64],
+        b: &Scalar,
+    ) -> Self {
+        #[cfg(feature = "std")]
+        let odd_b = basepoint_affine_odd_multiples();
+        // Without a place to cache the table, rebuild it per call. `no_std`
+        // verification is not the performance-critical path.
+        #[cfg(not(feature = "std"))]
+        let odd_b = &build_basepoint_affine_odd_multiples();
+
+        let a_naf = a.non_adjacent_form(8);
+        let b_naf = b.non_adjacent_form(8);
+        let mut i = 255;
+        while i > 0 && a_naf[i] == 0 && b_naf[i] == 0 {
+            i -= 1;
+        }
+
+        let mut acc = ProjectivePoint::IDENTITY;
+        loop {
+            let mut completed = acc.double();
+            if a_naf[i] != 0 || b_naf[i] != 0 {
+                let mut extended = completed.to_extended();
+                if a_naf[i] > 0 {
+                    completed = extended.add_affine_niels(&odd_a[(a_naf[i] as usize) / 2]);
+                } else if a_naf[i] < 0 {
+                    completed =
+                        extended.add_affine_niels(&odd_a[((-a_naf[i]) as usize) / 2].negate());
+                }
+                if b_naf[i] != 0 {
+                    if a_naf[i] != 0 {
+                        extended = completed.to_extended();
+                    }
+                    if b_naf[i] > 0 {
+                        completed = extended.add_affine_niels(&odd_b[(b_naf[i] as usize) / 2]);
+                    } else {
+                        completed =
+                            extended.add_affine_niels(&odd_b[((-b_naf[i]) as usize) / 2].negate());
+                    }
+                }
+            }
+            if i == 0 {
+                break completed.to_extended();
+            }
+            acc = completed.to_projective();
+            i -= 1;
+        }
+    }
 }
 
 /// A point in projective coordinates `(X:Y:Z)`, the shape the doubling-heavy
@@ -530,11 +584,16 @@ fn basepoint_affine_odd_multiples() -> &'static [AffineNiels; 64] {
 }
 
 fn build_basepoint_affine_odd_multiples() -> [AffineNiels; 64] {
+    affine_odd_multiples(&BASEPOINT)
+}
+
+/// Odd multiples `1P, 3P, .., 127P` of a point in affine-Niels form.
+fn affine_odd_multiples(point: &EdwardsPoint) -> [AffineNiels; 64] {
     let mut odd = [EdwardsPoint::IDENTITY; 64];
-    odd[0] = BASEPOINT;
-    let double_b = BASEPOINT.double();
+    odd[0] = *point;
+    let double_p = point.double();
     for i in 1..64 {
-        odd[i] = odd[i - 1].add(&double_b);
+        odd[i] = odd[i - 1].add(&double_p);
     }
 
     // Normalize all 64 points to Z = 1 with one shared inversion
@@ -674,6 +733,20 @@ pub fn verify_strict(
         return Err(SignatureError::SmallOrderPublicKey);
     }
 
+    verify_tail(public_key, message, signature, |k, s| {
+        EdwardsPoint::vartime_double_scalar_mul_basepoint(k, &big_a.negate(), s)
+    })
+}
+
+/// The tail every strict verification shares once the key itself is settled:
+/// parse and canonicity-check `S`, derive `k`, recompute the equation's right
+/// side, compare in compressed form.
+fn verify_tail(
+    public_key: &[u8; 32],
+    message: &[u8],
+    signature: &[u8; 64],
+    recompute: impl FnOnce(&Scalar, &Scalar) -> EdwardsPoint,
+) -> Result<(), SignatureError> {
     let mut r_bytes = [0_u8; 32];
     r_bytes.copy_from_slice(&signature[..32]);
     let mut s_bytes = [0_u8; 32];
@@ -694,13 +767,68 @@ pub fn verify_strict(
     // encoding of a curve point, so bytes that are not one can never match.
     // R is decompressed only on the failure path, to classify the error the
     // same way as before.
-    let recomputed = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &big_a.negate(), &s);
+    let recomputed = recompute(&k, &s);
     if ct_eq_bytes(&recomputed.compress(), &r_bytes).is_set() {
         Ok(())
     } else if EdwardsPoint::decompress(&r_bytes).is_none() {
         Err(SignatureError::InvalidSignatureR)
     } else {
         Err(SignatureError::VerificationFailed)
+    }
+}
+
+/// A public key prepared for repeated strict verification.
+///
+/// Records are verified far more often than authors change: one sync opens
+/// many records from the same pinned key. Preparation pays the key's
+/// decompression, its small-order rejection and its odd-multiples table once;
+/// every verification against the prepared key skips all three, and its
+/// `A`-side additions run from an affine table — the cheapest kind, the same
+/// shape the constant basepoint enjoys.
+///
+/// [`PreparedVerifier::verify_strict`] accepts and rejects exactly what the
+/// free [`verify_strict`] accepts and rejects, error for error; the
+/// key-shaped failures simply surface at construction instead of per call.
+#[derive(Clone)]
+pub struct PreparedVerifier {
+    public: [u8; 32],
+    /// Odd multiples of the *negated* key point: the equation adds `[k](-A)`.
+    negated_odd: [AffineNiels; 64],
+}
+
+impl core::fmt::Debug for PreparedVerifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PreparedVerifier({:?})", self.public)
+    }
+}
+
+impl PreparedVerifier {
+    /// Decompress the key, reject small-order points, build the table.
+    pub fn new(public_key: &[u8; 32]) -> Result<Self, SignatureError> {
+        let big_a = EdwardsPoint::decompress(public_key).ok_or(SignatureError::InvalidPublicKey)?;
+        if big_a.is_small_order().is_set() {
+            return Err(SignatureError::SmallOrderPublicKey);
+        }
+        Ok(Self {
+            public: *public_key,
+            negated_odd: affine_odd_multiples(&big_a.negate()),
+        })
+    }
+
+    /// The 32-byte key this verifier was prepared from.
+    pub const fn public_key(&self) -> &[u8; 32] {
+        &self.public
+    }
+
+    /// Strict verification against the prepared key.
+    pub fn verify_strict(
+        &self,
+        message: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<(), SignatureError> {
+        verify_tail(&self.public, message, signature, |k, s| {
+            EdwardsPoint::vartime_double_scalar_mul_prepared(k, &self.negated_odd, s)
+        })
     }
 }
 
@@ -817,6 +945,84 @@ mod tests {
             verify_strict(&key.verifying_key(), b"message", &signature),
             Err(SignatureError::NonCanonicalSignatureS)
         );
+    }
+
+    #[test]
+    fn prepared_verifier_agrees_with_the_free_function_case_for_case() {
+        let key = SigningKey::from_seed(&[21_u8; 32]);
+        let public = key.verifying_key();
+        let prepared = PreparedVerifier::new(&public).unwrap();
+
+        for length in [0_usize, 1, 32, 100, 1000] {
+            let message: Vec<u8> = (0..length).map(|i| (i * 13) as u8).collect();
+            let good = key.sign(&message);
+
+            // The valid signature, then every single-field corruption, then a
+            // non-canonically encoded S; the two paths must agree exactly.
+            let mut r_corrupted = good;
+            r_corrupted[0] ^= 0x01;
+            let mut s_corrupted = good;
+            s_corrupted[40] ^= 0x01;
+            let mut wrong_message = message.clone();
+            wrong_message.push(0x77);
+            let mut non_canonical_s = good;
+            non_canonical_s[32..].copy_from_slice(&[
+                0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9,
+                0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x10,
+            ]);
+
+            for (case, message, signature) in [
+                ("valid", &message, &good),
+                ("corrupted R", &message, &r_corrupted),
+                ("corrupted S", &message, &s_corrupted),
+                ("wrong message", &wrong_message, &good),
+                ("non-canonical S", &message, &non_canonical_s),
+            ] {
+                assert_eq!(
+                    prepared.verify_strict(message, signature),
+                    verify_strict(&public, message, signature),
+                    "length {length}, case {case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_verifier_rejects_bad_keys_at_construction() {
+        // The identity point encodes as y = 1 and has small order.
+        let mut identity = [0_u8; 32];
+        identity[0] = 1;
+        assert_eq!(
+            PreparedVerifier::new(&identity).unwrap_err(),
+            SignatureError::SmallOrderPublicKey
+        );
+
+        // A y coordinate past the field modulus is not a canonical encoding.
+        let invalid = [0xff_u8; 32];
+        assert_eq!(
+            PreparedVerifier::new(&invalid).unwrap_err(),
+            SignatureError::InvalidPublicKey
+        );
+    }
+
+    #[test]
+    fn prepared_verifier_passes_the_rfc_vector() {
+        // RFC 8032, section 7.1, test 3, through the prepared path.
+        let seed = hex32("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7");
+        let key = SigningKey::from_seed(&seed);
+        let prepared = PreparedVerifier::new(&key.verifying_key()).unwrap();
+        let message = [0xaf, 0x82];
+        let signature = hex64(concat!(
+            "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac",
+            "18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"
+        ));
+        assert!(prepared.verify_strict(&message, &signature).is_ok());
+        // One preparation, many verifications: the intended shape.
+        for extra in 0..8_u8 {
+            let other = key.sign(&[extra]);
+            assert!(prepared.verify_strict(&[extra], &other).is_ok());
+        }
     }
 
     #[test]

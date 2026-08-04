@@ -103,7 +103,7 @@ pub mod simple;
 pub mod util;
 
 pub use aead::{AeadError, Suite};
-pub use edwards::{SignatureError, SigningKey, verify_strict};
+pub use edwards::{PreparedVerifier, SignatureError, SigningKey, verify_strict};
 pub use kdf::{HmacSha256, HmacSha512, hkdf, hkdf_expand, hkdf_extract};
 pub use montgomery::StaticSecret;
 pub use sha2::{Sha256, Sha512};
