@@ -74,3 +74,19 @@ A full record: fresh object secret, payload AEAD, one HPKE envelope per recipien
 
 Batch sealing scales across cores: each record has its own object secret, so nothing is shared and nothing needs locking.
 
+
+## Addendum: changes after this capture, same day
+
+This file is the last full capture on a quiet machine, taken at commit
+`2710638`. Five optimisation commits landed after it, and the machine never
+went quiet again that day, so their effect is recorded here as paired
+same-process ratios — the form that survives ambient load — rather than as
+fresh absolute rows. The stale rows above understate us:
+
+| Row | This file says | Paired, after the changes |
+|---|---|---|
+| Ed25519 verify (strict) | 0.75x of `ed25519-dalek` | **0.89x** |
+| Argon2id, 64 MiB x 3 | 0.86x of the `argon2` crate | **1.02x** |
+| AES-256-GCM below 1 KiB | 3.20 GB/s at 1 KiB | **+7%** at 1 KiB, **+11%** at 256 B |
+
+A full quiet-machine re-capture replaces this addendum.

@@ -193,6 +193,13 @@ three full passes, which agreed within 3% on every single-core row.
 load, so absolutes drift between sessions; every comparison ran back-to-back
 in one process, so the standings hold even when the absolutes move.
 
+> **Same-day addendum.** Five commits landed after this capture, and the
+> machine never went quiet enough for an honest full re-run. Measured paired
+> in one process: Ed25519 verify 0.75x → **0.89x** of dalek, Argon2id 0.86x →
+> **1.02x** of the `argon2` crate, short-message AES-GCM **+7–11%**. The
+> tables below are the last quiet-machine capture and understate those three
+> rows; a re-capture replaces this note.
+
 **AEAD encryption, GB/s — higher is better**
 
 | Implementation | 1 KiB | 64 KiB | 1 MiB |
@@ -207,10 +214,11 @@ in one process, so the standings hold even when the absolutes move.
 ChaCha20-Poly1305 stood at 0.72x of `ring` before the fused seal pass and the
 base-2^64 Poly1305; it is now 0.89–0.90x at every size. AES-256-GCM is 0.93x
 at 64 KiB and parity at 1 MiB. The honest weak row is short-message AES-GCM:
-at 1 KiB we run 0.62x of `ring`, because every seal pays the full key schedule
-and GHASH table setup. RustCrypto's aes-gcm leads everyone at 1 KiB for the
-same reason in reverse — its cipher object amortises setup across calls, a
-shape our fresh-key-per-record API deliberately does not have.
+0.62x of `ring` at 1 KiB in this capture — every seal pays the full key
+schedule and GHASH table setup, of which the addendum's setup trim has since
+recovered +7%. RustCrypto's aes-gcm leads everyone at 1 KiB for the same
+reason in reverse — its cipher object amortises setup across calls, a shape
+our fresh-key-per-record API deliberately does not have.
 
 **Hashing, GB/s at 64 KiB**
 
@@ -241,10 +249,11 @@ canonical encoding.
 | seal, 4 KiB, 3 recipients | 7 445 |
 | seal batch, all 10 cores | 75 507 |
 
-Where we lead: X25519, Ed25519 signing, HPKE, and the whole-record path. Where
-we trail: Ed25519 verification (0.75x), hashing against `ring`'s assembly, and
-short-message AES-GCM. Each is named in the [roadmap](#roadmap) with the
-technique that would close it.
+Where we lead: X25519, Ed25519 signing, HPKE, Argon2id (as of the addendum),
+and the whole-record path. Where we trail: Ed25519 verification (0.89x after
+the addendum), hashing against `ring`'s assembly, and short-message AES-GCM.
+Each is named in the [roadmap](#roadmap) with the technique that would close
+it.
 
 ### What the acceleration pass changed
 
@@ -269,6 +278,20 @@ Every symmetric primitive was rewritten against the hardware it runs on:
   what fused AEAD assembly arranges by hand. Together with the Poly1305
   rewrite: 0.72x → 0.90x of `ring`. Opening keeps its two passes on purpose —
   verify-then-decrypt is a documented property, not an implementation detail.
+- **Ed25519 verification** stopped decompressing `R` on the success path (the
+  byte comparison subsumes the validity check), moved its vartime loop to
+  T-free projective doublings — four squarings and no multiplies per doubling
+  — and widened the constant basepoint table to 64 odd multiples, normalised
+  with one shared inversion. 0.75x → 0.89x of dalek; the remainder is field
+  multiplication scheduling, not algorithm.
+- **Argon2** permutes its rows in place — a row already is the sixteen-word
+  window, so the gather through a runtime index array was 512 wasted memory
+  operations per compression — and gathers columns with constant strides.
+  0.86x → 1.02x of the reference `argon2` crate.
+- **AES-GCM per-seal setup**: SubWord stays in registers, round keys load
+  straight from the expanded schedule, and the GHASH key powers form a
+  three-deep tree instead of a seven-deep ladder. Every seal pays setup once
+  per fresh key, so short messages gain most: +11% at 256 B, +7% at 1 KiB.
 - **SHA-512** moved onto the ARMv8.2 `SHA512H/H2/SU0/SU1` instructions, 2.6x
   over scalar, gated on a positive `FEAT_SHA512` check.
 - **Ed25519 verification** caches its table points in projective- and
@@ -341,9 +364,11 @@ from 0.72x of `ring` to 0.90x; what remains of that path is below.
    per-block `RBIT`, and software-pipelining GHASH against the previous group.
    Also worth testing whether schoolbook beats Karatsuba on Apple cores, as the
    canonical ARMv8 GCM paper found.
-2. **Short-message AES-GCM.** At 1 KiB we run 0.62x of `ring`: every seal pays
-   the full key schedule and H-power table. Trim the setup or offer a
-   reusable-key entry point for callers that legitimately reuse one.
+2. **Short-message AES-GCM.** Every seal pays the key schedule and H-power
+   table; the setup is register-resident now (+7–11% below 1 KiB), and the
+   remaining gap to `ring` at 1 KiB is the measurement regime itself —
+   competitors amortise an expanded key across calls. A reusable-key entry
+   point would give callers that legitimately reuse a key the same economics.
 3. **The last 10% of ChaCha20-Poly1305**: the chunked overlap still loses to
    `ring`'s hand-scheduled fusion; instruction-level interleaving of the
    Poly1305 chain into the cipher loop is the remaining technique.
@@ -351,8 +376,9 @@ from 0.72x of `ring` to 0.90x; what remains of that path is below.
    turns "constant time" from an assumption about undocumented microarchitecture
    into an architectural guarantee.
 5. **A PAKE (OPAQUE)** so a stolen vault blob is not offline-attackable.
-6. **Ed25519 verify**: width-8 NAF, T-free projective doubling, affine-Niels
-   basepoint table.
+6. **The last of Ed25519 verify** (0.89x): the algorithm now matches dalek's —
+   width-8 NAF, T-free doublings, affine-Niels table — so what remains is the
+   same field-arithmetic scheduling as the next item.
 7. **Curve25519 scheduling** before any representation change — we are roughly
    2.2x above our own theoretical floor, and published work reports 1.9x from
    scheduling alone.
