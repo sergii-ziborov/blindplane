@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use blindplane_crypto::aead::Suite;
-use blindplane_crypto::{Sha256, verify_strict};
+use blindplane_crypto::{PreparedVerifier, Sha256, verify_strict};
 
 /// Current binary wire format version.
 pub const FORMAT_VERSION: u16 = 1;
@@ -301,6 +301,41 @@ impl SealedRecord {
         Ok(())
     }
 
+    /// Verify structure, signature and the pin against a prepared signer.
+    ///
+    /// Behaves exactly like [`validate`](Self::validate) with a policy pinning
+    /// only `verifier.public_key()` — same checks, same error variants — but
+    /// the signer's key parsing and verification tables were paid once, at
+    /// [`PreparedVerifier::new`], instead of per record. The policy supplies
+    /// the limits; its `allowed_signers` set is not consulted, because the
+    /// verifier *is* the pin.
+    pub fn validate_pinned(
+        &self,
+        verifier: &PreparedVerifier,
+        policy: &ValidationPolicy,
+    ) -> Result<(), WireError> {
+        self.validate_limits(policy)?;
+        let signature: [u8; 64] = self
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| WireError::InvalidSignatureLength(self.signature.len()))?;
+
+        if self.signer_public_key == *verifier.public_key() {
+            verifier
+                .verify_strict(&self.signing_bytes(), &signature)
+                .map_err(|_| WireError::InvalidSignature)
+        } else {
+            // A record from some other signer is rejected either way; checking
+            // its self-declared signature first keeps the error variants
+            // exactly those of the cold path: a forgery is InvalidSignature,
+            // a genuine record from the wrong author is UntrustedSigner.
+            verify_strict(&self.signer_public_key, &self.signing_bytes(), &signature)
+                .map_err(|_| WireError::InvalidSignature)?;
+            Err(WireError::UntrustedSigner)
+        }
+    }
+
     /// Check limits and canonical form, but not the signature.
     ///
     /// This exists for one caller: a signer checking its own freshly built
@@ -455,6 +490,21 @@ impl FreshnessHead {
         policy: &ValidationPolicy,
     ) -> Result<(), WireError> {
         record.validate(policy)?;
+        self.require_exact_head(record)
+    }
+
+    /// [`verify_current`](Self::verify_current) against a prepared signer.
+    pub fn verify_current_pinned(
+        &self,
+        record: &SealedRecord,
+        verifier: &PreparedVerifier,
+        policy: &ValidationPolicy,
+    ) -> Result<(), WireError> {
+        record.validate_pinned(verifier, policy)?;
+        self.require_exact_head(record)
+    }
+
+    fn require_exact_head(&self, record: &SealedRecord) -> Result<(), WireError> {
         if !self.same_identity(record)
             || self.manifest_revision != record.manifest_revision
             || self.content_version != record.context.version

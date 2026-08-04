@@ -31,7 +31,8 @@ use blindplane_crypto::argon2::{Argon2Params, argon2id};
 use blindplane_crypto::montgomery::StaticSecret;
 use blindplane_crypto::util::{Secret, SecretVec};
 use blindplane_crypto::{
-    HmacSha256, Sha256, SigningKey, ct_eq_bytes, hkdf_expand, hkdf_extract, hpke, rand,
+    HmacSha256, PreparedVerifier, Sha256, SigningKey, ct_eq_bytes, hkdf_expand, hkdf_extract, hpke,
+    rand,
 };
 use blindplane_wire::{
     BlindIndex, FORMAT_VERSION, FreshnessHead, RecipientEnvelope, RecordContext, SealedRecord,
@@ -387,6 +388,37 @@ pub fn seal(
     Ok(record)
 }
 
+/// An expected signer whose Ed25519 verification state is prepared once.
+///
+/// Pinning an author is a per-session act; records verified against the pin
+/// arrive constantly. Preparation pays the key's parsing, its small-order
+/// rejection and its verification tables once, and [`open_pinned`] then
+/// verifies each record measurably faster than [`open`], with an identical
+/// accept set.
+pub struct PinnedSigner {
+    verifier: PreparedVerifier,
+}
+
+impl core::fmt::Debug for PinnedSigner {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PinnedSigner({:?})", self.public_key())
+    }
+}
+
+impl PinnedSigner {
+    /// Prepare a pinned author key for repeated verification.
+    pub fn new(public_key: [u8; 32]) -> Result<Self, CryptoError> {
+        PreparedVerifier::new(&public_key)
+            .map(|verifier| Self { verifier })
+            .map_err(|_| CryptoError::InvalidSignerKey)
+    }
+
+    /// The pinned 32-byte public key.
+    pub fn public_key(&self) -> [u8; 32] {
+        *self.verifier.public_key()
+    }
+}
+
 /// Open a record after enforcing an expected signer pin.
 pub fn open(
     record: &SealedRecord,
@@ -394,6 +426,25 @@ pub fn open(
     expected_signer: [u8; 32],
 ) -> Result<SecretVec, CryptoError> {
     record.validate(&policy_for(expected_signer))?;
+    open_validated(record, recipient)
+}
+
+/// [`open`] against a signer prepared once with [`PinnedSigner::new`].
+pub fn open_pinned(
+    record: &SealedRecord,
+    recipient: &RecipientKeypair,
+    signer: &PinnedSigner,
+) -> Result<SecretVec, CryptoError> {
+    record.validate_pinned(&signer.verifier, &ValidationPolicy::default())?;
+    open_validated(record, recipient)
+}
+
+/// The shared body of every open: envelope lookup, DEK unwrap, key
+/// commitment, payload AEAD. Callers have already validated the record.
+fn open_validated(
+    record: &SealedRecord,
+    recipient: &RecipientKeypair,
+) -> Result<SecretVec, CryptoError> {
     let envelope = record
         .recipient(
             &recipient.recipient.recipient_id,
@@ -436,6 +487,18 @@ pub fn open_at_head(
 ) -> Result<SecretVec, CryptoError> {
     head.verify_current(record, &policy_for(expected_signer))?;
     open(record, recipient, expected_signer)
+}
+
+/// [`open_at_head`] against a signer prepared once with [`PinnedSigner::new`].
+pub fn open_at_head_pinned(
+    record: &SealedRecord,
+    recipient: &RecipientKeypair,
+    signer: &PinnedSigner,
+    head: &FreshnessHead,
+) -> Result<SecretVec, CryptoError> {
+    head.verify_current_pinned(record, &signer.verifier, &ValidationPolicy::default())?;
+    record.validate_pinned(&signer.verifier, &ValidationPolicy::default())?;
+    open_validated(record, recipient)
 }
 
 /// Add a recipient envelope without re-encrypting the payload.
@@ -835,6 +898,8 @@ pub enum CryptoError {
     Randomness,
     /// A recipient id or epoch is invalid, or a key fingerprint did not match.
     InvalidKeyIdentity,
+    /// The pinned signer key is not a usable Ed25519 public key.
+    InvalidSignerKey,
     /// At least one recipient is required.
     NoRecipients,
     /// A recipient id/epoch pair was repeated.
@@ -874,6 +939,7 @@ impl core::fmt::Display for CryptoError {
         match self {
             Self::Randomness => f.write_str("operating system CSPRNG failed"),
             Self::InvalidKeyIdentity => f.write_str("invalid recipient key identity"),
+            Self::InvalidSignerKey => f.write_str("pinned signer key is not a usable public key"),
             Self::NoRecipients => f.write_str("at least one recipient is required"),
             Self::DuplicateRecipient => f.write_str("duplicate recipient"),
             Self::DuplicateIndex => f.write_str("duplicate blind index"),
@@ -1184,5 +1250,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pinned_open_agrees_with_cold_open_case_for_case() {
+        let author = Author::generate().unwrap();
+        let alice = RecipientKeypair::generate("alice", 1).unwrap();
+        let bob = RecipientKeypair::generate("bob", 1).unwrap();
+        let record = seal(
+            &author,
+            context(),
+            b"pinned payload",
+            &[alice.recipient()],
+            vec![],
+            fastest_payload_suite(),
+        )
+        .unwrap();
+
+        let pinned = PinnedSigner::new(author.public_key()).unwrap();
+        let stranger = Author::generate().unwrap();
+        let wrong_pin = PinnedSigner::new(stranger.public_key()).unwrap();
+
+        // The valid record opens identically through both paths.
+        assert_eq!(
+            open_pinned(&record, &alice, &pinned).unwrap().as_bytes(),
+            open(&record, &alice, author.public_key())
+                .unwrap()
+                .as_bytes()
+        );
+
+        // Every rejection matches the cold path variant for variant: a wrong
+        // pin, a recipient without an envelope, a tampered payload and a
+        // tampered signature.
+        assert_eq!(
+            open_pinned(&record, &alice, &wrong_pin).unwrap_err(),
+            open(&record, &alice, stranger.public_key()).unwrap_err()
+        );
+        assert_eq!(
+            open_pinned(&record, &bob, &pinned).unwrap_err(),
+            open(&record, &bob, author.public_key()).unwrap_err()
+        );
+        let mut tampered = record.clone();
+        tampered.ciphertext[0] ^= 1;
+        assert_eq!(
+            open_pinned(&tampered, &alice, &pinned).unwrap_err(),
+            open(&tampered, &alice, author.public_key()).unwrap_err()
+        );
+        let mut resigned = record.clone();
+        resigned.signature[10] ^= 1;
+        assert_eq!(
+            open_pinned(&resigned, &alice, &pinned).unwrap_err(),
+            open(&resigned, &alice, author.public_key()).unwrap_err()
+        );
+
+        // A key that is not a curve point fails at pin construction.
+        assert_eq!(
+            PinnedSigner::new([0xff; 32]).unwrap_err(),
+            CryptoError::InvalidSignerKey
+        );
+    }
+
+    #[test]
+    fn pinned_open_at_head_agrees_with_cold() {
+        let author = Author::generate().unwrap();
+        let alice = RecipientKeypair::generate("alice", 1).unwrap();
+        let record = seal(
+            &author,
+            context(),
+            b"head payload",
+            &[alice.recipient()],
+            vec![],
+            fastest_payload_suite(),
+        )
+        .unwrap();
+        let head = FreshnessHead::start(&record, &policy_for(author.public_key())).unwrap();
+        let pinned = PinnedSigner::new(author.public_key()).unwrap();
+
+        assert_eq!(
+            open_at_head_pinned(&record, &alice, &pinned, &head)
+                .unwrap()
+                .as_bytes(),
+            open_at_head(&record, &alice, author.public_key(), &head)
+                .unwrap()
+                .as_bytes()
+        );
+
+        // A different record against this head is a rollback on both paths.
+        let mut newer_context = context();
+        newer_context.version += 1;
+        let newer = seal(
+            &author,
+            newer_context,
+            b"newer",
+            &[alice.recipient()],
+            vec![],
+            fastest_payload_suite(),
+        )
+        .unwrap();
+        assert_eq!(
+            open_at_head_pinned(&newer, &alice, &pinned, &head).unwrap_err(),
+            open_at_head(&newer, &alice, author.public_key(), &head).unwrap_err()
+        );
     }
 }

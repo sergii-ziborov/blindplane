@@ -24,7 +24,9 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use blindplane_core::{Author, BatchItem, RecipientKeypair, open, seal, seal_batch};
+use blindplane_core::{
+    Author, BatchItem, PinnedSigner, RecipientKeypair, open, open_pinned, seal, seal_batch,
+};
 use blindplane_crypto::aead::Suite;
 use blindplane_crypto::argon2::{Argon2Params, argon2id};
 use blindplane_crypto::hpke as bp_hpke;
@@ -604,6 +606,13 @@ fn bench_end_to_end(report: &mut String) {
         black_box(open(&record, &alice, signer).unwrap());
     });
 
+    // The pinned variant prepares the author's verification state once per
+    // session instead of once per record — the shape a sync actually has.
+    let pinned = PinnedSigner::new(signer).expect("author key is valid");
+    let open_pinned_rate = measure(|| {
+        black_box(open_pinned(&record, &alice, &pinned).unwrap());
+    });
+
     let three: Vec<_> = (0..3)
         .map(|i| RecipientKeypair::generate(format!("user-{i}"), 1).unwrap())
         .collect();
@@ -641,6 +650,7 @@ fn bench_end_to_end(report: &mut String) {
     for (name, value) in [
         ("seal, 4 KiB, 1 recipient", seal_rate),
         ("open, 4 KiB, 1 recipient", open_rate),
+        ("open, 4 KiB, pinned author", open_pinned_rate),
         ("seal, 4 KiB, 3 recipients", seal_three),
         ("seal batch, all cores (records/s)", batch_rate),
     ] {
