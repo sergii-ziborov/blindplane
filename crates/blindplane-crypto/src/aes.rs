@@ -69,9 +69,10 @@ pub fn open_in_place(
 mod arm {
     use crate::util::ct_eq_bytes;
     use core::arch::aarch64::{
-        poly64x2_t, uint8x16_t, vaeseq_u8, vaesmcq_u8, vdupq_n_u8, veorq_u8, vextq_u8,
-        vgetq_lane_u64, vld1q_u8, vmull_high_p64, vmull_p64, vrbitq_u8, vreinterpretq_p64_u8,
-        vreinterpretq_u8_p128, vreinterpretq_u64_u8, vst1q_u8,
+        poly64x2_t, uint8x16_t, vaeseq_u8, vaesmcq_u8, vdupq_n_u8, vdupq_n_u32, veorq_u8, vextq_u8,
+        vgetq_lane_u32, vgetq_lane_u64, vld1q_u8, vmull_high_p64, vmull_p64, vrbitq_u8,
+        vreinterpretq_p64_u8, vreinterpretq_u8_p128, vreinterpretq_u8_u32, vreinterpretq_u32_u8,
+        vreinterpretq_u64_u8, vst1q_u8,
     };
     use std::sync::OnceLock;
 
@@ -127,13 +128,11 @@ mod arm {
                 words[i] = words[i - 8] ^ temp;
             }
 
+            // The words are little-endian u32s laid out contiguously, which is
+            // exactly the byte order a round key loads with; no re-assembly.
             let mut round_keys = [vdupq_n_u8(0); 15];
             for (round, slot) in round_keys.iter_mut().enumerate() {
-                let mut bytes = [0_u8; 16];
-                for j in 0..4 {
-                    bytes[j * 4..j * 4 + 4].copy_from_slice(&words[round * 4 + j].to_le_bytes());
-                }
-                *slot = vld1q_u8(bytes.as_ptr());
+                *slot = vld1q_u8(words.as_ptr().cast::<u8>().add(round * 16));
             }
             round_keys
         }
@@ -142,19 +141,13 @@ mod arm {
     /// Apply the AES S-box to each byte of a word using the AES instruction.
     #[target_feature(enable = "aes")]
     unsafe fn sub_word(word: u32) -> u32 {
-        // SAFETY: the caller guarantees the AES extension.
-        unsafe {
-            // With all four columns equal, ShiftRows is the identity, so
-            // AESE(x, 0) reduces to SubBytes applied column-wise.
-            let mut bytes = [0_u8; 16];
-            for chunk in 0..4 {
-                bytes[chunk * 4..chunk * 4 + 4].copy_from_slice(&word.to_le_bytes());
-            }
-            let substituted = vaeseq_u8(vld1q_u8(bytes.as_ptr()), vdupq_n_u8(0));
-            let mut out = [0_u8; 16];
-            vst1q_u8(out.as_mut_ptr(), substituted);
-            u32::from_le_bytes([out[0], out[1], out[2], out[3]])
-        }
+        // With all four columns equal, ShiftRows is the identity, so
+        // AESE(x, 0) reduces to SubBytes applied column-wise. Broadcast and
+        // lane-extract keep the word in registers; round-tripping it through
+        // the stack costs more than the substitution itself.
+        let splat = vreinterpretq_u8_u32(vdupq_n_u32(word));
+        let substituted = vaeseq_u8(splat, vdupq_n_u8(0));
+        vgetq_lane_u32::<0>(vreinterpretq_u32_u8(substituted))
     }
 
     /// The unreduced 256-bit carry-less product of two field elements.
@@ -262,14 +255,17 @@ mod arm {
         unsafe fn new(h_block: uint8x16_t) -> Self {
             // SAFETY: the caller guarantees AES and PMULL.
             unsafe {
+                // The powers form a tree, not a ladder: after h2 the pairs
+                // are independent, so the serial PMULL latency chain is three
+                // deep instead of seven.
                 let h = reflect(h_block);
                 let h2 = gf_mul(h, h);
                 let h3 = gf_mul(h2, h);
-                let h4 = gf_mul(h3, h);
-                let h5 = gf_mul(h4, h);
-                let h6 = gf_mul(h5, h);
-                let h7 = gf_mul(h6, h);
-                let h8 = gf_mul(h7, h);
+                let h4 = gf_mul(h2, h2);
+                let h5 = gf_mul(h3, h2);
+                let h6 = gf_mul(h3, h3);
+                let h7 = gf_mul(h4, h3);
+                let h8 = gf_mul(h4, h4);
                 // Ordered so `powers[i]` multiplies the i-th block of a group
                 // of eight: H^8 down to H^1.
                 Self {
